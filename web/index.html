@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>청약 레이더</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&family=Nanum+Myeongjo:wght@700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#F2F4F7; --card:#FFFFFF; --ink:#17233B; --muted:#66707F;
+  --line:#DCE1E8; --red:#C8402A; --green:#1F7A54; --navy:#26436E;
+}
+*{box-sizing:border-box; margin:0; padding:0}
+body{background:var(--bg); color:var(--ink);
+  font-family:'IBM Plex Sans KR',-apple-system,'Apple SD Gothic Neo',sans-serif;
+  font-size:15px; line-height:1.55; -webkit-font-smoothing:antialiased}
+.wrap{max-width:760px; margin:0 auto; padding:0 16px 80px}
+
+header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:space-between; gap:12px}
+.brand{font-family:'Nanum Myeongjo',serif; font-weight:800; font-size:26px; letter-spacing:-.5px}
+.brand em{font-style:normal; color:var(--red)}
+.sync{font-size:12px; color:var(--muted); text-align:right}
+.sync button{margin-left:8px; border:1px solid var(--line); background:var(--card);
+  color:var(--ink); border-radius:6px; padding:4px 10px; font:inherit; font-size:12px; cursor:pointer}
+.sync button:hover{border-color:var(--navy)}
+.sync button:focus-visible{outline:2px solid var(--navy); outline-offset:2px}
+
+.statusbar{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px}
+.pill{font-size:12px; padding:3px 10px; border-radius:999px; border:1px solid var(--line); background:var(--card); color:var(--muted)}
+.pill.ok{border-color:#BFDCCB; color:var(--green); background:#F1F8F4}
+.pill.warn{border-color:#EAC5BC; color:var(--red); background:#FBF2F0}
+
+.tabs{display:flex; gap:2px; border:1px solid var(--line); background:var(--card);
+  border-radius:8px; padding:3px; margin-bottom:16px; width:max-content}
+.tabs button{border:0; background:transparent; padding:6px 14px; border-radius:6px;
+  font:inherit; font-size:13px; color:var(--muted); cursor:pointer}
+.tabs button[aria-pressed="true"]{background:var(--ink); color:#fff}
+.tabs button:focus-visible{outline:2px solid var(--navy); outline-offset:2px}
+
+.card{display:flex; gap:14px; background:var(--card); border:1px solid var(--line);
+  border-radius:10px; padding:16px; margin-bottom:10px}
+.dday{flex:0 0 74px; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  border-right:1px solid var(--line); padding-right:14px}
+.dday .num{font-size:26px; font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:-.5px; line-height:1.1; white-space:nowrap}
+.dday .lbl{font-size:11px; color:var(--muted); margin-top:2px; text-align:center}
+.dday.open .num{color:var(--green)}
+.dday.soon .num{color:var(--red)}
+.dday.later .num{color:var(--navy)}
+.dday.done .num{color:var(--muted)}
+
+.body{flex:1; min-width:0}
+.name{font-weight:700; font-size:16px; letter-spacing:-.2px}
+.name a{color:inherit; text-decoration:none}
+.name a:hover{text-decoration:underline}
+.meta{font-size:13px; color:var(--muted); margin:2px 0 10px}
+
+.timeline{display:flex; flex-wrap:wrap; gap:6px 16px; font-size:13px; padding:8px 0;
+  border-top:1px dashed var(--line); border-bottom:1px dashed var(--line)}
+.timeline .step{display:flex; align-items:center; gap:6px; color:var(--muted); font-variant-numeric:tabular-nums}
+.timeline .step b{color:var(--ink); font-weight:500}
+.timeline .step::before{content:""; width:7px; height:7px; border-radius:50%; background:var(--line)}
+.timeline .step.now::before{background:var(--green)}
+.timeline .step.next::before{background:var(--red)}
+
+.tags{display:flex; flex-wrap:wrap; gap:6px; margin-top:10px}
+.tag{font-size:12px; padding:2px 9px; border-radius:4px; background:#EEF1F5; color:#3C4A63}
+.tag.warn{background:#FBF2F0; color:var(--red)}
+.tag.cost{background:#EAF3EE; color:var(--green)}
+.tag.hot{background:#FFF3D6; color:#8A6A00; font-weight:700; border:1px solid #E7C766}
+.maplink{color:var(--navy); text-decoration:none; font-weight:500; white-space:nowrap}
+.maplink:hover{text-decoration:underline}
+
+.settings{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:14px}
+.settings h3{font-size:14px; margin-bottom:4px}
+.settings label{display:block; font-size:12px; color:var(--muted); margin:8px 0 3px}
+.settings input,.settings select{width:100%; padding:7px 9px; border:1px solid var(--line);
+  border-radius:6px; font:inherit; font-size:13px; background:#fff; color:var(--ink)}
+.settings .row{display:flex; gap:10px}
+.settings .row>div{flex:1; min-width:0}
+.settings .save{margin-top:12px; background:var(--navy); color:#fff; border:0; border-radius:6px;
+  padding:8px 16px; font:inherit; cursor:pointer}
+.settings .hint{font-size:11px; color:var(--muted); margin-top:8px; line-height:1.5}
+
+.toolbar{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:16px; flex-wrap:wrap}
+.sortsel{border:1px solid var(--line); background:var(--card); color:var(--ink);
+  border-radius:8px; padding:6px 10px; font:inherit; font-size:13px; cursor:pointer}
+.analyze{margin-top:10px; border:1px solid var(--navy); background:#fff; color:var(--navy);
+  border-radius:6px; padding:5px 12px; font:inherit; font-size:12px; cursor:pointer}
+.analyze:hover{background:var(--navy); color:#fff}
+.analyze:disabled{opacity:.55; cursor:default}
+.llm{margin-top:10px; padding:10px 12px; background:#F4F7FB; border:1px solid #DCE6F2;
+  border-radius:8px; font-size:13px; line-height:1.65}
+.llm b{color:var(--navy)} .llm div{margin-top:3px}
+.llm .muted{color:var(--muted); font-size:12px}
+.llm.hot{background:#FFF7E6; border-color:#E7C766}
+.llmfoot{margin-top:8px} .llmfoot .analyze{margin-top:0}
+
+.empty{padding:60px 0; text-align:center; color:var(--muted)}
+.empty b{display:block; font-size:16px; color:var(--ink); margin-bottom:6px}
+
+@media (max-width:520px){
+  .card{flex-direction:column; gap:10px}
+  .dday{flex-direction:row; gap:8px; border-right:0; border-bottom:1px solid var(--line);
+    padding:0 0 10px; justify-content:flex-start; align-items:baseline}
+  .dday .lbl{margin-top:0}
+}
+@media (prefers-reduced-motion:no-preference){
+  .card{animation:in .25s ease both}
+  @keyframes in{from{opacity:0; transform:translateY(4px)}to{opacity:1; transform:none}}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">청약 <em>레이더</em></div>
+    <div class="sync">
+      <span id="syncInfo">동기화 대기 중</span>
+      <button id="settingsBtn" type="button" title="공고문 분석 LLM 설정">⚙ LLM</button>
+      <button id="refreshBtn" type="button">지금 수집</button>
+    </div>
+  </header>
+
+  <div class="statusbar" id="statusbar"></div>
+
+  <div class="settings" id="settingsPanel" hidden>
+    <h3>공고문 분석 LLM (분양가/필요현금 계산)</h3>
+    <label>제공자</label>
+    <select id="setProvider">
+      <option value="openai">직접 서버 (OpenAI 호환 · gemma4 등)</option>
+      <option value="gemini">Google Gemini</option>
+      <option value="">사용 안 함 (계약금 가정치만)</option>
+    </select>
+    <div class="row">
+      <div><label>URL (base)</label><input id="setBaseUrl" placeholder="https://xxxx.trycloudflare.com"></div>
+      <div><label>모델</label><input id="setModel" placeholder="gemma-4-26b"></div>
+    </div>
+    <div class="row">
+      <div><label>ID (Basic Auth)</label><input id="setUser" placeholder="demo"></div>
+      <div><label>비밀번호</label><input id="setPass" type="password" placeholder=""></div>
+    </div>
+    <div id="apiKeyWrap" hidden><label>Gemini API 키</label><input id="setApiKey" type="password" placeholder=""></div>
+    <button class="save" id="setSave" type="button">저장</button>
+    <span id="setStatus" class="hint"></span>
+    <div class="hint">cloudflared quick tunnel은 URL·비번이 재시작마다 바뀝니다. 바뀌면 여기서 갱신하세요.<br>설정은 DB(/data)에 저장되어 이미지·소스 업데이트에도 유지됩니다.</div>
+  </div>
+
+  <div class="toolbar">
+    <div id="catTabs" class="tabs" role="group" aria-label="공고 종류 필터">
+      <button data-c="all" aria-pressed="true" type="button">전체</button>
+      <button data-c="sale" aria-pressed="false" type="button">분양</button>
+      <button data-c="remndr" aria-pressed="false" type="button">무순위</button>
+      <button data-c="rent" aria-pressed="false" type="button">임대</button>
+    </div>
+    <div id="statTabs" class="tabs" role="group" aria-label="공고 상태 필터">
+      <button data-f="active" aria-pressed="true" type="button">접수·예정</button>
+      <button data-f="open" aria-pressed="false" type="button">접수중</button>
+      <button data-f="upcoming" aria-pressed="false" type="button">예정</button>
+      <button data-f="done" aria-pressed="false" type="button">마감</button>
+      <button data-f="all" aria-pressed="false" type="button">전체</button>
+    </div>
+    <select id="sortSel" class="sortsel" aria-label="정렬">
+      <option value="deadline">마감임박순</option>
+      <option value="recent">최신 공고순</option>
+    </select>
+  </div>
+
+  <div id="list"></div>
+</div>
+
+<script>
+let NOTICES = [], FILTER = 'active', CAT = 'all', SORT = 'deadline', TODAY = new Date();
+const $ = s => document.querySelector(s);
+/* 공고 종류: 분양(applyhome·lh) / 무순위(applyhome_remndr) / 임대(applyhome_rent·board) */
+function catOf(n){
+  if(n.source==='applyhome_remndr') return 'remndr';
+  if(n.source==='applyhome_rent' || n.source==='board') return 'rent';
+  return 'sale';
+}
+function urgencyOf(j){ if(j.k==='done') return 99999; if(j.num==='오늘') return 0;
+  const m=/D-(\d+)/.exec(j.num); return m?parseInt(m[1]):900; }
+
+function pd(s){ if(!s) return null; const d = new Date(String(s).slice(0,10)+'T00:00:00'); return isNaN(d) ? null : d; }
+function days(d){ return Math.round((d - new Date(TODAY.toDateString())) / 86400000); }
+
+/* 상태 판정: 접수중 > 예정(D-n) > 발표대기 > 마감 */
+function judge(n){
+  const L = n.llm || {};  // 임대는 LLM이 뽑은 신청기간을 1순위 창으로 사용
+  const wins = [[n.sp_start,n.sp_end,'특별공급'],[L.apply_start||n.r1_start,L.apply_end||n.r1_end,'1순위'],[n.r2_start,n.r2_end,'2순위']];
+  for(const [a,b] of wins){
+    const s = pd(a), e = pd(b) || s;
+    if(s && days(s) <= 0 && e && days(e) >= 0)
+      return {k:'open', num: days(e)===0 ? '오늘' : 'D-'+days(e), lbl:'접수 마감까지'};
+  }
+  let nearest = null;
+  for(const [a,,name] of wins){
+    const s = pd(a);
+    if(s && days(s) > 0 && (!nearest || s < nearest.d)) nearest = {d:s, name};
+  }
+  if(nearest){
+    const dd = days(nearest.d);
+    return {k: dd<=3 ? 'soon':'later', num:'D-'+dd, lbl:nearest.name+' 시작'};
+  }
+  const w = pd(n.winner_date);
+  if(w && days(w) >= 0) return {k:'later', num:'D-'+days(w), lbl:'당첨 발표'};
+  // 날짜가 아예 없는 임대만 중립('접수 확인'). 신청기간이 있는데 여기까지 왔으면 지난 것=마감
+  if(n.source === 'board' && !(n.sp_start || L.apply_start || n.r1_start || n.r2_start))
+    return {k:'later', num:'공고', lbl:'접수 확인'};
+  return {k:'done', num:'—', lbl:'마감'};
+}
+
+function stepCls(a,b){
+  const s = pd(a), e = pd(b) || s;
+  if(s && days(s)<=0 && e && days(e)>=0) return 'now';
+  if(s && days(s)>0) return 'next';
+  return '';
+}
+function fr(a,b){ if(!a) return null; a=String(a).slice(5,10).replace('-','.'); b=b?String(b).slice(5,10).replace('-','.'):null; return b&&b!==a ? a+'~'+b : a; }
+function esc(s){ return String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function card(n){
+  const j = judge(n);
+  const L = n.llm || {};
+  const steps = [];
+  const add = (name,a,b) => { const r = fr(a,b); if(r) steps.push(`<span class="step ${stepCls(a,b)}">${name} <b>${r}</b></span>`); };
+  add('특공', n.sp_start, n.sp_end);
+  add(n.source==='board'?'신청':'1순위', L.apply_start||n.r1_start, L.apply_end||n.r1_end);
+  add('2순위', n.r2_start, n.r2_end);
+  if(n.winner_date) steps.push(`<span class="step">발표 <b>${esc(String(n.winner_date).slice(5,10).replace('-','.'))}</b></span>`);
+  const tcls = t => t.includes('⚠')?'warn' : t.includes('🔥')?'hot' : (t.includes('💰')||t.includes('🏠'))?'cost' : '';
+  const tags = (n.tags||[]).map(t=>`<span class="tag ${tcls(t)}">${esc(t)}</span>`).join('');
+  const supply = n.total_supply ? ' · '+n.total_supply+'세대' : '';
+  const nm = n.url ? `<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.name)}</a>` : esc(n.name);
+  const mq = n.address || n.name || '';
+  const mapBtn = mq ? ` · <a class="maplink" href="https://map.kakao.com/link/search/${encodeURIComponent(mq)}" target="_blank" rel="noopener">🗺 지도</a>` : '';
+  return `<div class="card" data-k="${j.k}">
+    <div class="dday ${j.k}"><span class="num">${j.num==='오늘'?'오늘':j.num}</span><span class="lbl">${j.lbl}</span></div>
+    <div class="body">
+      <div class="name">${nm}</div>
+      <div class="meta">${esc(n.region||'')} · ${esc(n.house_kind||'')}${supply}${mapBtn}</div>
+      ${steps.length ? `<div class="timeline">${steps.join('')}</div>` : ''}
+      ${tags ? `<div class="tags">${tags}</div>` : ''}
+      ${llmHtml(n)}
+    </div>
+  </div>`;
+}
+
+/* LLM 분석 결과 박스 또는 '분석' 버튼 */
+function money(v){ v=Math.round(v); const e=Math.floor(v/10000), m=v%10000;
+  return e&&m ? `${e}억 ${m.toLocaleString()}만` : e ? `${e}억` : `${m.toLocaleString()}만`; }
+function llmSummary(L){
+  if(!L) return '정보없음';
+  if(L.kind==='rent') return [L.deposit_manwon?'보증금 '+money(L.deposit_manwon):'', L.monthly_manwon?'월'+L.monthly_manwon:''].filter(Boolean).join(' ')||'임대';
+  return '필요현금 '+money(L.equity);
+}
+function histHtml(n){
+  const H = n.llm_history||[];
+  if(H.length <= 1) return '';
+  const prev = H.slice(1).map(x=>`${esc(llmSummary(x.r))} <span class="muted">${esc((x.at||'').slice(5,16))}</span>`).join(' · ');
+  return `<div class="muted" style="margin-top:6px">이전: ${prev}</div>`;
+}
+function llmHtml(n){
+  if(n._loading && !n.enriched) return `<button class="analyze" disabled>분석 중… (LLM)</button>`;
+  if(!n.enriched) return `<button class="analyze" onclick="enrichNotice('${n.id}')">🔄 LLM 분석</button>`;
+  const L = n.llm;
+  // 재분석 중이면 이전 결과는 그대로 두고 푸터만 '분석 중…'
+  const again = n._loading ? `<span class="muted">🔄 분석 중…</span>`
+    : `<button class="analyze" onclick="enrichNotice('${n.id}',true)">🔄 다시</button>`;
+  if(!L) return `<div class="llm"><span class="muted">분석함 · 정보를 못 찾음</span><div class="llmfoot">${again}</div></div>`;
+  let inner;
+  if(L.kind==='rent'){
+    const p=[]; if(L.deposit_manwon)p.push('보증금 '+money(L.deposit_manwon));
+    if(L.monthly_manwon)p.push('월 '+L.monthly_manwon+'만'); if(L.area_m2)p.push('전용 '+L.area_m2+'㎡');
+    inner = `<b>🏠 임대조건</b> ${esc(p.join(' · '))||'-'}`;
+    if(L.apply_start) inner += `<div>신청 ${fr(L.apply_start,L.apply_end)||esc(L.apply_start)}</div>`;
+    if(L.note) inner += `<div class="muted">${esc(L.note)}</div>`;
+  } else {
+    const price = L.price_lo===L.price_hi ? money(L.price_lo) : money(L.price_lo)+'~'+money(L.price_hi);
+    const reg = L.hopetown?'신희타 모기지':(L.regulated?'규제':'비규제');
+    const cap = L.cap_hit ? ' 대출 '+money(L.loan)+' 상한' : '';
+    inner = `<b>💰 필요현금</b> ${L.highlight?'🔥 ':''}${money(L.equity)} <span class="muted">(${reg} LTV${L.ltv_pct}%${cap})</span>`
+      + `<div class="muted">분양가 ${price} · 계약 최소현금 ${money(L.entry_cash)}(계약금 ${L.contract_pct}%${L.estimated?' 가정':''})</div>`;
+    if(L.rank_advice) inner += `<div><b>🤖 순위</b> ${esc(L.rank_advice)}</div>`;
+  }
+  return `<div class="llm ${L.highlight?'hot':''}">${inner}${histHtml(n)}<div class="llmfoot">${again}</div></div>`;
+}
+async function enrichNotice(id, force){
+  const n = NOTICES.find(x=>x.id===id); if(!n) return;
+  n._loading = true; render();
+  try{
+    const res = await (await fetch('/api/enrich',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id, force: !!force})})).json();
+    n.enriched = true; n.llm = res.llm;
+    if(res.llm_history) n.llm_history = res.llm_history;
+  }catch(e){ /* keep button */ }
+  n._loading = false; render();
+}
+
+function render(){
+  const map = {active:['open','soon','later'], open:['open'], upcoming:['soon','later'], done:['done'], all:['open','soon','later','done']};
+  const rows = NOTICES.map(n=>({n, j:judge(n)}))
+    .filter(x=>CAT==='all' || catOf(x.n)===CAT)
+    .filter(x=>map[FILTER].includes(x.j.k))
+    .sort((a,b)=>{
+      const ord = {open:0, soon:1, later:2, done:3};
+      if(ord[a.j.k]!==ord[b.j.k]) return ord[a.j.k]-ord[b.j.k];
+      if(SORT==='deadline') return urgencyOf(a.j)-urgencyOf(b.j);
+      return 0;  // 최신 공고순: 서버 정렬(게시일 desc) 유지
+    });
+  $('#list').innerHTML = rows.length
+    ? rows.map(x=>card(x.n)).join('')
+    : `<div class="empty"><b>표시할 공고가 없습니다</b>수집 주기를 기다리거나 '지금 수집'을 눌러보세요.</div>`;
+}
+
+async function loadStatus(){
+  const s = await (await fetch('/api/status')).json();
+  TODAY = new Date(s.today+'T00:00:00');
+  $('#syncInfo').textContent = s.last_sync ? `마지막 동기화 ${s.last_sync.slice(5,16)} · ${s.last_sync_counts||''}` : '아직 동기화 전';
+  const pills = [];
+  pills.push(`<span class="pill">${s.mode==='premarital'?'혼인신고 전 모드':'기혼 모드'}</span>`);
+  pills.push(`<span class="pill ${s.telegram_configured?'ok':'warn'}">텔레그램 ${s.telegram_configured?'연결됨':'미설정'}</span>`);
+  pills.push(`<span class="pill ${s.applyhome_key?'ok':'warn'}">청약홈 키 ${s.applyhome_key?'OK':'없음'}</span>`);
+  pills.push(`<span class="pill ${s.lh_key?'ok':'warn'}">LH 키 ${s.lh_key?'OK':'없음'}</span>`);
+  if(s.mock) pills.push(`<span class="pill warn">MOCK 모드</span>`);
+  $('#statusbar').innerHTML = pills.join('');
+}
+
+async function loadNotices(){
+  NOTICES = await (await fetch('/api/notices')).json();
+  render();
+}
+
+function wireTabs(sel, apply){
+  const btns = document.querySelectorAll(sel+' button');
+  btns.forEach(b=>b.addEventListener('click', ()=>{
+    btns.forEach(x=>x.setAttribute('aria-pressed','false'));
+    b.setAttribute('aria-pressed','true');
+    apply(b); render();
+  }));
+}
+wireTabs('#statTabs', b=>{ FILTER = b.dataset.f; });
+wireTabs('#catTabs', b=>{ CAT = b.dataset.c; });
+$('#sortSel').addEventListener('change', e=>{ SORT = e.target.value; render(); });
+
+$('#refreshBtn').addEventListener('click', async ()=>{
+  $('#refreshBtn').disabled = true; $('#refreshBtn').textContent = '수집 중…';
+  try{ await fetch('/api/refresh', {method:'POST'}); await loadStatus(); await loadNotices(); }
+  finally{ $('#refreshBtn').disabled = false; $('#refreshBtn').textContent = '지금 수집'; }
+});
+
+/* LLM 설정 패널 */
+function toggleProviderFields(){
+  const gem = $('#setProvider').value === 'gemini';
+  $('#apiKeyWrap').hidden = !gem;
+}
+async function loadSettings(){
+  const s = await (await fetch('/api/settings')).json();
+  $('#setProvider').value = s.provider || '';
+  $('#setBaseUrl').value = s.base_url || '';
+  $('#setModel').value = s.model || '';
+  $('#setUser').value = s.user || '';
+  $('#setPass').placeholder = s.pass_set ? '(저장됨 · 변경 시만 입력)' : '';
+  $('#setApiKey').placeholder = s.api_key_set ? '(저장됨 · 변경 시만 입력)' : '';
+  toggleProviderFields();
+}
+$('#setProvider').addEventListener('change', toggleProviderFields);
+$('#settingsBtn').addEventListener('click', ()=>{
+  const el = $('#settingsPanel'); el.hidden = !el.hidden;
+  if(!el.hidden) loadSettings();
+});
+$('#setSave').addEventListener('click', async ()=>{
+  $('#setStatus').textContent = '저장 중…';
+  await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      provider: $('#setProvider').value, base_url: $('#setBaseUrl').value.trim(),
+      model: $('#setModel').value.trim(), user: $('#setUser').value.trim(),
+      pass: $('#setPass').value, api_key: $('#setApiKey').value,
+    })});
+  $('#setPass').value = ''; $('#setApiKey').value = '';
+  $('#setStatus').textContent = '저장됨 ✓';
+  loadSettings();
+});
+
+loadStatus().then(loadNotices);
+setInterval(()=>{ loadStatus(); loadNotices(); }, 5*60*1000);
+</script>
+</body>
+</html>

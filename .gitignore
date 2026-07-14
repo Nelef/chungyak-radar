@@ -1,0 +1,23 @@
+# 주의: .env / deploy.env 에는 실제 API 키가 들어있다.
+# 이 저장소는 개인용(비공개 Gitea)이라 실키를 함께 커밋한다.
+# 공개 전환·공유 시에는 반드시 키를 회수/교체하고 히스토리에서 제거할 것.
+
+# 빌드 산출물
+*.tar
+
+# 런타임 데이터 (SQLite 등)
+data/*
+!data/.gitkeep
+*.db
+
+# 파이썬
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS/에디터
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

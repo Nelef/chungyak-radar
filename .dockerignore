@@ -1,0 +1,8 @@
+# 빌드 컨텍스트에서 제외 (이미지엔 app/·web/만 들어감)
+.env
+.env.example
+data/
+*.db
+.git/
+__pycache__/
+*.pyc

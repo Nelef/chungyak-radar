@@ -1,0 +1,12 @@
+services:
+  chungyak-radar:
+    build: .
+    image: chungyak-radar:latest    # docker load 한 이미지를 재빌드 없이 사용
+    container_name: chungyak-radar
+    ports:
+      - "8899:8000"          # NAS에서 http://NAS_IP:8899 로 접속
+    env_file: .env
+    volumes:
+      - ./data:/data         # SQLite 저장 (컨테이너 재생성해도 유지)
+      - ./config.yaml:/config/config.yaml:ro
+    restart: unless-stopped
