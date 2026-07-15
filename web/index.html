@@ -81,7 +81,12 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
   padding:8px 16px; font:inherit; cursor:pointer}
 .settings .hint{font-size:11px; color:var(--muted); margin-top:8px; line-height:1.5}
 
-.toolbar{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:16px; flex-wrap:wrap}
+.toolbar{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; flex-wrap:wrap}
+.filterbar{display:flex; align-items:center; gap:16px; margin-bottom:16px; flex-wrap:wrap; font-size:13px}
+.fchk{display:inline-flex; align-items:center; gap:6px; color:var(--ink); cursor:pointer}
+.fchk input[type=number]{width:56px; border:1px solid var(--line); border-radius:6px;
+  padding:3px 6px; font:inherit; font-size:13px; text-align:right}
+.filterbar .hint{font-size:12px; color:var(--muted)}
 .sortsel{border:1px solid var(--line); background:var(--card); color:var(--ink);
   border-radius:8px; padding:6px 10px; font:inherit; font-size:13px; cursor:pointer}
 .analyze{margin-top:10px; border:1px solid var(--navy); background:#fff; color:var(--navy);
@@ -168,11 +173,21 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
     </select>
   </div>
 
+  <div class="filterbar">
+    <label class="fchk"><input type="checkbox" id="areaOn"> 전용
+      <input type="number" id="areaVal" min="49" step="1" value="49"> ㎡ 이상</label>
+    <label class="fchk"><input type="checkbox" id="cashOn"> 필요현금
+      <input type="number" id="cashVal" min="0" step="0.5" value="2"> 억 이하</label>
+    <span class="hint" id="filterHint"></span>
+  </div>
+
   <div id="list"></div>
 </div>
 
 <script>
 let NOTICES = [], FILTER = 'active', CAT = 'all', SORT = 'deadline', TODAY = new Date();
+// 값 필터(면적·필요현금) — 각각 켜기/끄기 + 값 조정, 동시 적용. localStorage에 저장.
+let AREA_ON = false, AREA_VAL = 49, CASH_ON = false, CASH_VAL = 20000; // CASH_VAL은 만원
 const $ = s => document.querySelector(s);
 /* 공고 종류: 분양(applyhome·lh) / 무순위(applyhome_remndr) / 임대(applyhome_rent·board) */
 function catOf(n){
@@ -312,11 +327,38 @@ async function enrichNotice(id, force){
   n._loading = false; render();
 }
 
+/* 값 필터용: 공고의 최대 전용면적(평형별 units 기준, 없으면 대표 area_m2) */
+function maxArea(n){
+  const L = n.llm; if(!L) return null;
+  let mx = 0; for(const u of (L.units||[])) if(u.area > mx) mx = u.area;
+  if(!mx && L.area_m2) mx = L.area_m2;
+  return mx || null;
+}
+/* 값 필터용: 필요한 현금 — 분양=필요현금(equity), 임대=보증금 */
+function cashNeeded(n){
+  const L = n.llm; if(!L) return null;
+  if(L.kind==='rent') return L.deposit_manwon ?? null;
+  return L.equity ?? null;
+}
+/* 값 필터는 '분석된 공고'에만 적용(미분석은 값을 몰라 통과시켜 목록에 남긴다) */
+function passValueFilters(n){
+  if(AREA_ON && n.enriched && n.llm){
+    const a = maxArea(n);
+    if(a == null || a < AREA_VAL) return false;
+  }
+  if(CASH_ON && n.enriched && n.llm){
+    const c = cashNeeded(n);
+    if(c != null && c > CASH_VAL) return false;
+  }
+  return true;
+}
+
 function render(){
   const map = {active:['open','soon','later'], open:['open'], upcoming:['soon','later'], done:['done'], all:['open','soon','later','done']};
   const rows = NOTICES.map(n=>({n, j:judge(n)}))
     .filter(x=>CAT==='all' || catOf(x.n)===CAT)
     .filter(x=>map[FILTER].includes(x.j.k))
+    .filter(x=>passValueFilters(x.n))
     .sort((a,b)=>{
       const ord = {open:0, soon:1, later:2, done:3};
       if(ord[a.j.k]!==ord[b.j.k]) return ord[a.j.k]-ord[b.j.k];
@@ -325,7 +367,10 @@ function render(){
     });
   $('#list').innerHTML = rows.length
     ? rows.map(x=>card(x.n)).join('')
-    : `<div class="empty"><b>표시할 공고가 없습니다</b>수집 주기를 기다리거나 '지금 수집'을 눌러보세요.</div>`;
+    : `<div class="empty"><b>표시할 공고가 없습니다</b>필터를 조정하거나 '지금 수집'을 눌러보세요.</div>`;
+  const fh = $('#filterHint');
+  if(fh) fh.textContent = (AREA_ON || CASH_ON)
+    ? '※ 값 필터는 분석된 공고에만 적용됩니다(미분석은 그대로 표시).' : '';
 }
 
 async function loadStatus(){
@@ -357,6 +402,35 @@ function wireTabs(sel, apply){
 wireTabs('#statTabs', b=>{ FILTER = b.dataset.f; });
 wireTabs('#catTabs', b=>{ CAT = b.dataset.c; });
 $('#sortSel').addEventListener('change', e=>{ SORT = e.target.value; render(); });
+
+/* 값 필터: 저장된 값 복원 → UI 반영 → 변경 시 저장+렌더 */
+function loadFilterPrefs(){
+  try{
+    const p = JSON.parse(localStorage.getItem('cr_filters') || '{}');
+    if(typeof p.areaOn==='boolean') AREA_ON = p.areaOn;
+    if(p.areaVal > 0) AREA_VAL = p.areaVal;
+    if(typeof p.cashOn==='boolean') CASH_ON = p.cashOn;
+    if(p.cashVal >= 0) CASH_VAL = p.cashVal;
+  }catch(e){}
+  $('#areaOn').checked = AREA_ON; $('#areaVal').value = AREA_VAL;
+  $('#cashOn').checked = CASH_ON; $('#cashVal').value = CASH_VAL/10000;
+}
+function saveFilterPrefs(){
+  localStorage.setItem('cr_filters', JSON.stringify(
+    {areaOn:AREA_ON, areaVal:AREA_VAL, cashOn:CASH_ON, cashVal:CASH_VAL}));
+}
+function onFilterChange(){
+  AREA_ON = $('#areaOn').checked;
+  AREA_VAL = parseFloat($('#areaVal').value) || 0;
+  CASH_ON = $('#cashOn').checked;
+  CASH_VAL = Math.round((parseFloat($('#cashVal').value) || 0) * 10000); // 억 → 만원
+  saveFilterPrefs(); render();
+}
+['areaOn','areaVal','cashOn','cashVal'].forEach(id=>{
+  $('#'+id).addEventListener('input', onFilterChange);
+  $('#'+id).addEventListener('change', onFilterChange);
+});
+loadFilterPrefs();
 
 $('#refreshBtn').addEventListener('click', async ()=>{
   $('#refreshBtn').disabled = true; $('#refreshBtn').textContent = '수집 중…';
