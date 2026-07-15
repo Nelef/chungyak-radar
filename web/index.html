@@ -46,6 +46,7 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 .dday.open .num{color:var(--green)}
 .dday.soon .num{color:var(--red)}
 .dday.later .num{color:var(--navy)}
+.dday.result .num{color:var(--navy); opacity:.6}
 .dday.done .num{color:var(--muted)}
 
 .body{flex:1; min-width:0}
@@ -220,7 +221,8 @@ function judge(n){
     return {k: dd<=3 ? 'soon':'later', num:'D-'+dd, lbl:nearest.name+' 시작'};
   }
   const w = pd(n.winner_date);
-  if(w && days(w) >= 0) return {k:'later', num:'D-'+days(w), lbl:'당첨 발표'};
+  // 접수는 끝나고 발표만 남은 상태 → 접수·예정이 아니라 별도(마감 탭에 노출)
+  if(w && days(w) >= 0) return {k:'result', num:'D-'+days(w), lbl:'당첨 발표'};
   // 날짜가 아예 없는 임대만 중립('접수 확인'). 신청기간이 있는데 여기까지 왔으면 지난 것=마감
   if(n.source === 'board' && !(n.sp_start || L.apply_start || n.r1_start || n.r2_start))
     return {k:'later', num:'공고', lbl:'접수 확인'};
@@ -356,13 +358,13 @@ function passValueFilters(n){
 }
 
 function render(){
-  const map = {active:['open','soon','later'], open:['open'], upcoming:['soon','later'], done:['done'], all:['open','soon','later','done']};
+  const map = {active:['open','soon','later'], open:['open'], upcoming:['soon','later'], done:['result','done'], all:['open','soon','later','result','done']};
   const rows = NOTICES.map(n=>({n, j:judge(n)}))
     .filter(x=>CAT==='all' || catOf(x.n)===CAT)
     .filter(x=>map[FILTER].includes(x.j.k))
     .filter(x=>passValueFilters(x.n))
     .sort((a,b)=>{
-      const ord = {open:0, soon:1, later:2, done:3};
+      const ord = {open:0, soon:1, later:2, result:3, done:4};
       if(ord[a.j.k]!==ord[b.j.k]) return ord[a.j.k]-ord[b.j.k];
       if(SORT==='deadline') return urgencyOf(a.j)-urgencyOf(b.j);
       return 0;  // 최신 공고순: 서버 정렬(게시일 desc) 유지
