@@ -653,9 +653,14 @@ def _build(notice, regulated, ccfg, profile=None, remndr=False):
     min_area = float(ccfg.get("min_area_m2") or 0)
     big = [p for p in all_prices if _area(p["ty"]) >= min_area] if min_area else all_prices
     prices = big or all_prices  # 요약 필요현금은 ≥49㎡ 최저가, 전부 소형이면(신혼희망타운 등) 전체
+    # 무순위(줍줍)는 대부분 소형이라 49㎡ 필터를 적용하면 평형별이 다 사라짐 → 전 타입 표시
+    unit_src = all_prices if remndr else big
 
     lo = min(p["price"] for p in prices)
     hi = max(p["price"] for p in prices)
+    areas = [_area(p["ty"]) for p in prices if _area(p["ty"])]
+    area_lo = round(min(areas), 1) if areas else None
+    area_hi = round(max(areas), 1) if areas else None
 
     terms, estimated = None, False
     s = llm_settings()
@@ -694,9 +699,9 @@ def _build(notice, regulated, ccfg, profile=None, remndr=False):
     c_pct = float(terms.get("contract_pct") or 0)
     self_pct = float(terms.get("interim_self_pay_pct") or 0)
     hl = float(ccfg.get("highlight_under_manwon") or 0)
-    # 전용 min_area㎡ 이상 평형별: 각 필요현금 + 세대수(일반+특공)
+    # 평형별: 각 필요현금 + 세대수(일반+특공). 분양은 ≥49㎡만, 무순위는 전 타입.
     units = []
-    for p in sorted(big, key=lambda x: _area(x["ty"])):
+    for p in sorted(unit_src, key=lambda x: _area(x["ty"])):
         ln = p["price"] * ltv / 100
         if cap and ln > cap:
             ln = cap
@@ -709,7 +714,7 @@ def _build(notice, regulated, ccfg, profile=None, remndr=False):
         })
     return {
         "kind": "sale", "units": units,
-        "price_lo": lo, "price_hi": hi,
+        "price_lo": lo, "price_hi": hi, "area_lo": area_lo, "area_hi": area_hi,
         "contract_pct": c_pct, "interim_self_pct": self_pct,
         "entry_cash": lo * (c_pct + self_pct) / 100,   # 계약~중도금 최소현금(최저가 기준)
         "loan": loan, "equity": equity, "ltv_pct": ltv, "cap_hit": cap_hit,

@@ -296,8 +296,9 @@ function llmHtml(n){
     const price = L.price_lo===L.price_hi ? money(L.price_lo) : money(L.price_lo)+'~'+money(L.price_hi);
     const reg = L.hopetown?'신희타 모기지':(L.regulated?'규제':'비규제');
     const cap = L.cap_hit ? ' 대출 '+money(L.loan)+' 상한' : '';
+    const ar = L.area_lo ? (L.area_lo===L.area_hi ? ` · 전용 ${L.area_lo}㎡` : ` · 전용 ${L.area_lo}~${L.area_hi}㎡`) : '';
     inner = `<b>💰 필요현금</b> ${L.highlight?'🔥 ':''}${money(L.equity)} <span class="muted">(${reg} LTV${L.ltv_pct}%${cap})</span>`
-      + `<div class="muted">분양가 ${price} · 계약 최소현금 ${money(L.entry_cash)}(계약금 ${L.contract_pct}%${L.estimated?' 가정':''})</div>`;
+      + `<div class="muted">분양가 ${price}${ar} · 계약 최소현금 ${money(L.entry_cash)}(계약금 ${L.contract_pct}%${L.estimated?' 가정':''})</div>`;
     if(L.rank_advice) inner += `<div><b>🤖 순위</b> ${esc(L.rank_advice)}</div>`;
   }
   return `<div class="llm ${L.highlight?'hot':''}">${inner}${unitsHtml(L)}${histHtml(n)}<div class="llmfoot">${again}</div></div>`;
@@ -314,7 +315,8 @@ function unitsHtml(L){
       ? ` <span class="muted">(일반 ${u.supply_general||0}·특공 ${u.supply_special||0})</span>` : '';
     return `<div class="urow">전용 ${u.area}㎡ · 필요현금 ${money(u.cash)}${sup}${det}</div>`;
   }).join('');
-  return `<div class="units"><div class="muted">평형별 (전용 49㎡↑)</div>${rows}</div>`;
+  const label = L.remndr ? '평형별' : '평형별 (전용 49㎡↑)';
+  return `<div class="units"><div class="muted">${label}</div>${rows}</div>`;
 }
 async function enrichNotice(id, force){
   const n = NOTICES.find(x=>x.id===id); if(!n) return;
