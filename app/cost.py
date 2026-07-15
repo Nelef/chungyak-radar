@@ -133,7 +133,11 @@ def _fetch_prices(house_manage_no, service_key, url=APPLYHOME_MDL):
         except (TypeError, ValueError):
             continue
         if price > 0:
-            out.append({"ty": (it.get("HOUSE_TY") or "").strip(), "price": price})
+            out.append({
+                "ty": (it.get("HOUSE_TY") or "").strip(), "price": price,
+                "supply": _int(it.get("SUPLY_HSHLDCO")),      # 일반공급 세대수
+                "sp_supply": _int(it.get("SPSPLY_HSHLDCO")),  # 특별공급 세대수
+            })
     return out
 
 
@@ -449,7 +453,7 @@ def _rent_price(pdf_bytes):
     return {"deposit_manwon": best[0], "monthly_manwon": best[1], "area_m2": best[2]}
 
 
-def _build_rent(notice):
+def _build_rent(notice, min_area=0):
     aid = (notice.get("raw") or {}).get("atchFileId")
     if not aid:
         return None
@@ -466,6 +470,8 @@ def _build_rent(notice):
         price = _rent_price(pdf)
         if price:
             t.update(price)
+        if min_area:
+            t["units"] = _rent_units(pdf, min_area)
     except Exception as e:  # noqa: BLE001
         log.warning("임대료 표 파싱 실패(%s): %s", notice.get("name"), e)
     if not t.get("apply_start"):
@@ -476,7 +482,7 @@ def _build_rent(notice):
     return t
 
 
-def _build_applyhome_rent(notice):
+def _build_applyhome_rent(notice, min_area=0):
     """공공지원 민간임대(청약홈) — 접수기간은 API에 이미 있으니 공고문 PDF로 보증금/월세만 뽑는다."""
     url = notice.get("url")
     t = {"kind": "rent", "apply_start": notice.get("r1_start"), "apply_end": notice.get("r1_end")}
@@ -486,6 +492,8 @@ def _build_applyhome_rent(notice):
             price = _rent_price(pdf)
             if price:
                 t.update(price)
+            if min_area:
+                t["units"] = _rent_units(pdf, min_area)
         except Exception as e:  # noqa: BLE001
             log.warning("임대료 표 파싱 실패(%s): %s", notice.get("name"), e)
         if not t.get("deposit_manwon"):  # 표 못 찾으면 LLM 폴백
@@ -522,6 +530,77 @@ def _area(ty):
     """주택형 문자열('084.9796A') → 전용면적 84.98."""
     m = re.match(r"\s*(\d+(?:\.\d+)?)", ty or "")
     return float(m.group(1)) if m else 0.0
+
+
+def _int(v):
+    try:
+        return int(str(v).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _rent_units(pdf_bytes, min_area):
+    """임대 공고문 표에서 전용 min_area㎡ 이상 평형별 (전용·최저보증금·월세·공급호수) 목록.
+    보증금/임대료/공급호수 컬럼을 헤더로 찾아 읽고, 같은 면적은 최저 보증금 옵션으로 합친다."""
+    import pdfplumber
+
+    def num(c):
+        c = (c or "").replace("\n", "").replace(",", "").strip()
+        return float(c) if re.fullmatch(r"\d+(?:\.\d+)?", c) else None
+
+    merged = {}  # area(반올림) -> (deposit, monthly, supply)
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as doc:
+        for page in doc.pages:
+            for table in (page.extract_tables() or []):
+                flat = " ".join(str(c) for row in table for c in (row or []) if c)
+                if "보증금" not in flat or "임대료" not in flat:
+                    continue
+                dep_cols, rent_cols, sup_cols = set(), set(), set()
+                for row in table:
+                    for i, c in enumerate(row):
+                        t = (c or "").replace("\n", "").replace(" ", "")
+                        if "보증금" in t:
+                            dep_cols.add(i)
+                        if "임대료" in t:
+                            rent_cols.add(i)
+                        if "공급호수" in t or "공급세대" in t:
+                            sup_cols.add(i)
+                rent_cols -= dep_cols
+                dep_cols, rent_cols = sorted(dep_cols), sorted(rent_cols)
+                sup_col = min(sup_cols) if sup_cols else None
+                if not dep_cols or not rent_cols:
+                    continue
+                for row in table:
+                    area = None
+                    for c in row:
+                        m = re.search(r"(\d+(?:\.\d+)?)\s*(?:m2|㎡|m²)", (c or "").replace("\n", ""))
+                        if m:
+                            area = float(m.group(1)); break
+                    if not area or area < min_area:
+                        continue
+                    deps = [(k, num(row[i])) for k, i in enumerate(dep_cols)
+                            if i < len(row) and num(row[i]) and num(row[i]) >= 1000]
+                    if not deps:
+                        continue
+                    k, dep = min(deps, key=lambda x: x[1])
+                    rent = num(row[rent_cols[k]]) if k < len(rent_cols) and rent_cols[k] < len(row) else None
+                    if dep >= 1_000_000:
+                        dep = dep / 10000
+                        rent = rent / 10000 if rent and rent >= 10000 else rent
+                    if not (500 <= dep <= 200000):
+                        continue
+                    sv = num(row[sup_col]) if (sup_col is not None and sup_col < len(row)) else None
+                    sup = int(sv) if sv else None
+                    a = round(area, 1)
+                    d, r = int(round(dep)), (int(round(rent)) if rent else 0)
+                    if a in merged:  # 같은 평형이 특공·일반 표에 나뉘어 있으면 세대수 합산, 보증금은 최저
+                        pd_, pr_, ps_ = merged[a]
+                        tot = None if (ps_ is None and sup is None) else (ps_ or 0) + (sup or 0)
+                        merged[a] = (d, r, tot) if d < pd_ else (pd_, pr_, tot)
+                    else:
+                        merged[a] = (d, r, sup)
+    return [{"area": a, "deposit": v[0], "monthly": v[1], "supply_total": v[2]}
+            for a, v in sorted(merged.items())]
 
 
 SALE_KEYWORDS = ("계약금", "중도금", "잔금", "납부", "공급금액", "대출", "융자",
@@ -568,12 +647,12 @@ def _build(notice, regulated, ccfg, profile=None, remndr=False):
     hmn = raw.get("HOUSE_MANAGE_NO") or notice["id"].split(":")[-1]
     pbn = raw.get("PBLANC_NO") or hmn
 
-    prices = _fetch_prices(hmn, ah_key, REMNDR_MDL if remndr else APPLYHOME_MDL)
-    min_area = float(ccfg.get("min_area_m2") or 0)
-    if min_area:  # 전용 59㎡ 이상만 (소형 제외). 단 전부 소형이면(신혼희망타운 등) 전체 사용
-        prices = [p for p in prices if _area(p["ty"]) >= min_area] or prices
-    if not prices:
+    all_prices = _fetch_prices(hmn, ah_key, REMNDR_MDL if remndr else APPLYHOME_MDL)
+    if not all_prices:
         return None
+    min_area = float(ccfg.get("min_area_m2") or 0)
+    big = [p for p in all_prices if _area(p["ty"]) >= min_area] if min_area else all_prices
+    prices = big or all_prices  # 요약 필요현금은 ≥49㎡ 최저가, 전부 소형이면(신혼희망타운 등) 전체
 
     lo = min(p["price"] for p in prices)
     hi = max(p["price"] for p in prices)
@@ -615,8 +694,21 @@ def _build(notice, regulated, ccfg, profile=None, remndr=False):
     c_pct = float(terms.get("contract_pct") or 0)
     self_pct = float(terms.get("interim_self_pay_pct") or 0)
     hl = float(ccfg.get("highlight_under_manwon") or 0)
+    # 전용 min_area㎡ 이상 평형별: 각 필요현금 + 세대수(일반+특공)
+    units = []
+    for p in sorted(big, key=lambda x: _area(x["ty"])):
+        ln = p["price"] * ltv / 100
+        if cap and ln > cap:
+            ln = cap
+        sup, sp = p.get("supply"), p.get("sp_supply")
+        units.append({
+            "area": round(_area(p["ty"]), 1),
+            "cash": int(round(p["price"] - ln)),
+            "supply_general": sup, "supply_special": sp,
+            "supply_total": ((sup or 0) + (sp or 0)) or None,
+        })
     return {
-        "kind": "sale",
+        "kind": "sale", "units": units,
         "price_lo": lo, "price_hi": hi,
         "contract_pct": c_pct, "interim_self_pct": self_pct,
         "entry_cash": lo * (c_pct + self_pct) / 100,   # 계약~중도금 최소현금(최저가 기준)
@@ -641,15 +733,16 @@ def enrich(notice, cfg, force=False):
     result = None
     try:
         src = notice.get("source")
+        min_area = float(ccfg.get("min_area_m2") or 0)
         if src in ("applyhome", "applyhome_remndr"):
             flags = notice.get("flags") or {}
             regulated = bool(flags.get("투기과열") or flags.get("조정대상"))
             result = _build(notice, regulated, ccfg, (cfg or {}).get("profile"),
                             remndr=(src == "applyhome_remndr"))
         elif src == "board":
-            result = _build_rent(notice)
+            result = _build_rent(notice, min_area)
         elif src == "applyhome_rent":
-            result = _build_applyhome_rent(notice)
+            result = _build_applyhome_rent(notice, min_area)
     except Exception as e:  # noqa: BLE001
         log.warning("%s LLM 분석 실패: %s", notice.get("name"), e)
     _cache_put(nid, result, ok=bool(result))

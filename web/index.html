@@ -94,6 +94,9 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 .llm .muted{color:var(--muted); font-size:12px}
 .llm.hot{background:#FFF7E6; border-color:#E7C766}
 .llmfoot{margin-top:8px} .llmfoot .analyze{margin-top:0}
+.units{margin-top:6px; padding-top:6px; border-top:1px dashed #C9D6E5}
+.units .urow{font-size:13px; font-variant-numeric:tabular-nums}
+.units .urow b{color:var(--ink)}
 
 .empty{padding:60px 0; text-align:center; color:var(--muted)}
 .empty b{display:block; font-size:16px; color:var(--ink); margin-bottom:6px}
@@ -282,7 +285,21 @@ function llmHtml(n){
       + `<div class="muted">분양가 ${price} · 계약 최소현금 ${money(L.entry_cash)}(계약금 ${L.contract_pct}%${L.estimated?' 가정':''})</div>`;
     if(L.rank_advice) inner += `<div><b>🤖 순위</b> ${esc(L.rank_advice)}</div>`;
   }
-  return `<div class="llm ${L.highlight?'hot':''}">${inner}${histHtml(n)}<div class="llmfoot">${again}</div></div>`;
+  return `<div class="llm ${L.highlight?'hot':''}">${inner}${unitsHtml(L)}${histHtml(n)}<div class="llmfoot">${again}</div></div>`;
+}
+function unitsHtml(L){
+  const U = L.units||[]; if(!U.length) return '';
+  const rows = U.map(u=>{
+    const sup = u.supply_total ? ` · <b>${u.supply_total}세대</b>` : '';
+    if(L.kind==='rent'){
+      const m = u.monthly ? ' / 월 '+u.monthly+'만' : '';
+      return `<div class="urow">전용 ${u.area}㎡ · 보증금 ${money(u.deposit)}${m}${sup}</div>`;
+    }
+    const det = (u.supply_general!=null||u.supply_special!=null)
+      ? ` <span class="muted">(일반 ${u.supply_general||0}·특공 ${u.supply_special||0})</span>` : '';
+    return `<div class="urow">전용 ${u.area}㎡ · 필요현금 ${money(u.cash)}${sup}${det}</div>`;
+  }).join('');
+  return `<div class="units"><div class="muted">평형별 (전용 49㎡↑)</div>${rows}</div>`;
 }
 async function enrichNotice(id, force){
   const n = NOTICES.find(x=>x.id===id); if(!n) return;
