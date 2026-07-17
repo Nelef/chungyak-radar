@@ -48,6 +48,7 @@ def run_collection() -> dict:
     cfg = rules.load_config()
     stale = db.deactivate_board_noise(cfg.get("board_exclude_keywords", []))
     stale += db.deactivate_stale_boards()
+    stale += db.deactivate_rent_types(cfg.get("lh_gh_rent_types", []))
     if stale:
         log.info("게시판 공고 %d건 비활성화(노이즈+노후)", stale)
     db.set_meta("last_sync", db.now_kst())

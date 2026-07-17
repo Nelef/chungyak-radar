@@ -26,8 +26,9 @@ LH_BASE = "http://apis.data.go.kr/B552555/lhLeaseNoticeInfo1/lhLeaseNoticeInfo1"
 # GH 경기주택도시공사 청약센터 (행복주택·국민임대 등 경기도 자체 공급)
 GH_LIST = "https://apply.gh.or.kr/sb/sr/sr7150/selectPbancRentHouseList.do"
 GH_DETAIL = "https://apply.gh.or.kr/sb/sr/sr7150/selectPbancDetailView.do"
-# 우리(예비신혼·청년, 무주택) 자격 대상 임대 유형만. 영구임대(취약계층)·매입/전세임대 제외.
-RENT_TYPES = ("행복주택", "국민임대", "공공임대", "통합공공임대", "6년 공공임대", "장기전세")
+# 수집할 LH·GH 임대 유형 기본값. 실제 값은 config.yaml의 lh_gh_rent_types에서 관리
+# (소득요건 초과 유형 제외 — 소득·가구원수가 바뀌면 config만 고치면 된다).
+RENT_TYPES = ("통합공공임대", "공공임대", "6년 공공임대", "장기전세")
 UA = {"User-Agent": "Mozilla/5.0"}
 
 LOOKBACK_DAYS = 60  # 최근 N일 공고만 조회
@@ -266,8 +267,9 @@ def _lh_detail(url) -> dict:
     return out
 
 
-def fetch_lh_lease(service_key: str) -> list[dict]:
-    """LH 임대 공고(행복주택·국민임대·공공임대 등). 분양(fetch_lh)과 같은 API의 임대(UPP=06)."""
+def fetch_lh_lease(service_key: str, types=None) -> list[dict]:
+    """LH 임대 공고(UPP=06). types에 든 유형만 수집(기본 RENT_TYPES)."""
+    types = tuple(types or RENT_TYPES)
     since = (datetime.now() - timedelta(days=LOOKBACK_DAYS)).strftime("%Y%m%d")
     today = datetime.now().strftime("%Y%m%d")
     out = []
@@ -282,8 +284,8 @@ def fetch_lh_lease(service_key: str) -> list[dict]:
         for it in _lh_dslist(r.json()):
             pan_id = _get(it, "PAN_ID")
             kind = _get(it, "AIS_TP_CD_NM", "UPP_AIS_TP_NM", default="")
-            if not pan_id or not any(k in kind for k in RENT_TYPES):
-                continue  # 영구임대·매입/전세임대 등 대상 외 유형 제외
+            if not pan_id or not any(k in kind for k in types):
+                continue  # 소득요건 초과·대상 외 유형(국민임대·행복주택·영구임대 등) 제외
             pan_nm = _get(it, "PAN_NM", default="(이름 없음)")
             url = _get(it, "DTL_URL")
             det = _lh_detail(url)  # 소재지·전용면적(통근 계산에 필요)
@@ -336,9 +338,10 @@ def _gh_detail(sess, pno, knd, biz) -> dict:
     return out
 
 
-def fetch_gh() -> list[dict]:
-    """GH 경기주택도시공사 청약센터 임대 공고(행복주택·국민임대 등, 경기도 자체 공급).
+def fetch_gh(types=None) -> list[dict]:
+    """GH 경기주택도시공사 청약센터 임대 공고(경기도 자체 공급). types에 든 유형만 수집.
     apply.gh.or.kr 목록 HTML을 파싱. TLS 핸드셰이크가 까다로워 _TLSAdapter로 접속한다."""
+    types = tuple(types or RENT_TYPES)
     s = gh_session()
     r = s.get(GH_LIST, headers=UA, timeout=25, verify=False)
     r.raise_for_status()
@@ -348,7 +351,7 @@ def fetch_gh() -> list[dict]:
         if not m:
             continue
         pno, knd, biz = m.groups()
-        if not any(k in biz for k in RENT_TYPES):
+        if not any(k in biz for k in types):
             continue
         tds = [re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", x)).strip()
                for x in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)]
@@ -450,6 +453,10 @@ def collect_all() -> list[dict]:
         log.info("MOCK 모드: 샘플 데이터 사용")
         return fetch_mock() + fetch_boards()
 
+    from app.rules import load_config
+    cfg = load_config()
+    rent_types = cfg.get("lh_gh_rent_types") or list(RENT_TYPES)
+
     notices: list[dict] = []
     ah_key = os.environ.get("APPLYHOME_API_KEY", "").strip()
     lh_key = os.environ.get("LH_API_KEY", "").strip()
@@ -466,23 +473,27 @@ def collect_all() -> list[dict]:
         log.warning("APPLYHOME_API_KEY 미설정 — 청약홈 수집 건너뜀")
 
     if lh_key:
-        for fn in (fetch_lh, fetch_lh_lease):  # 분양(05) + 임대(06: 행복주택·국민임대 등)
-            try:
-                got = fn(lh_key)
-                log.info("%s: %d건", fn.__name__, len(got))
-                notices += got
-            except Exception as e:  # noqa: BLE001
-                log.error("%s 실패: %s", fn.__name__, e)
+        try:
+            got = fetch_lh(lh_key)  # 분양(05)
+            log.info("fetch_lh: %d건", len(got))
+            notices += got
+        except Exception as e:  # noqa: BLE001
+            log.error("fetch_lh 실패: %s", e)
+        try:
+            got = fetch_lh_lease(lh_key, rent_types)  # 임대(06)
+            log.info("fetch_lh_lease: %d건", len(got))
+            notices += got
+        except Exception as e:  # noqa: BLE001
+            log.error("fetch_lh_lease 실패: %s", e)
     else:
         log.warning("LH_API_KEY 미설정 — LH 수집 건너뜀")
 
     try:  # GH 경기주택도시공사 (키 불필요, 목록 크롤)
-        got = fetch_gh()
+        got = fetch_gh(rent_types)
         log.info("fetch_gh: %d건", len(got))
         notices += got
     except Exception as e:  # noqa: BLE001
         log.error("fetch_gh 실패: %s", e)
 
-    from app.rules import load_config
-    notices += fetch_boards(load_config().get("boards"))
+    notices += fetch_boards(cfg.get("boards"))
     return notices

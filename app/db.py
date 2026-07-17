@@ -141,6 +141,21 @@ def deactivate_board_noise(keywords: list) -> int:
         return cur.rowcount
 
 
+def deactivate_rent_types(allowed: list) -> int:
+    """LH·GH 임대 중 허용 유형(config lh_gh_rent_types)이 아닌 공고를 비활성화.
+    유형을 config에서 뺐을 때, 재수집되지 않아 DB에 남는 기존 행까지 정리한다."""
+    if not allowed:
+        return 0
+    keep = " OR ".join(["house_kind LIKE ?"] * len(allowed))
+    with conn() as c:
+        cur = c.execute(
+            f"UPDATE notices SET matched = 0 WHERE source IN ('lh_rent','gh') "
+            f"AND matched = 1 AND NOT ({keep})",
+            [f"%{k}%" for k in allowed],
+        )
+        return cur.rowcount
+
+
 def deactivate_stale_boards(days: int = 45) -> int:
     """접수 마감일이 불확실한 게시판(board) 공고 중 공고일이 오래된 것을 비활성화한다.
     크롤 첫 페이지에서 밀려나 재수집되지 않는 옛 게시글이 matched=1로 남는 것을 정리.
