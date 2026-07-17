@@ -112,6 +112,21 @@ def process(notices: list[dict]) -> list[dict]:
             n["matched"] = not excluded(n, cfg) and not noise
             n["tags"] = build_rental_tags(n, cfg) if n["matched"] else []
             continue  # 주소가 불확실해 통근 계산은 생략 (신청기간은 buttons로 분석)
+        if n.get("source") in ("lh_rent", "gh"):  # LH임대·GH — 지역 대신 통근 1시간 이내만 남김
+            n["tags"] = build_rental_tags(n, cfg)
+            n["matched"] = not excluded(n, cfg)
+            if n["matched"] and ccfg.get("enabled"):
+                result = commute.to_yeoksam(n.get("address") or n.get("region") or "")
+                if result:
+                    minutes, transfers = result
+                    n["commute_min"] = minutes
+                    if minutes > ccfg["max_minutes"]:
+                        n["matched"] = False  # 목적지 1시간 초과 제외(사용자 요청)
+                    else:
+                        n["tags"].insert(0, f"🚇 목적지 약 {minutes}분 · 환승 {transfers}회")
+                else:  # 지오코딩 실패 — 거르지 않고 남기되 통근 미확인임을 표시
+                    n["tags"].insert(0, "🚇 통근시간 확인 필요(주소 미확인)")
+            continue
         n["matched"] = match_region(n, cfg) and not excluded(n, cfg)
         if n.get("source") == "applyhome_rent":  # 공공지원 민간임대 — 지역/통근 필터 + 임대 태그
             n["tags"] = build_rental_tags(n, cfg) if n["matched"] else []
@@ -146,6 +161,13 @@ def build_rental_tags(n: dict, cfg: dict) -> list[str]:
         tags.append("청년안심 — 특공은 소득 120% 초과로 불가, 일반공급으로만 신청")
     if "신혼희망" in name:
         tags.append("⚠ 신혼희망타운 — 수익공유형 확인")
+    kind = (n.get("house_kind") or "") + name
+    if "행복주택" in kind:
+        tags.append("행복주택 — 청년·신혼 대상, 소득요건 확인(맞벌이 완화). 대출규제 무관")
+    elif "국민임대" in kind:
+        tags.append("국민임대 — 소득·자산 요건, 장기거주(최장 30년). 대출규제 무관")
+    elif "공공임대" in kind:  # 통합공공임대 포함
+        tags.append("공공임대 — 소득·자산 요건 확인, 장기거주 가능. 대출규제 무관")
     if cfg.get("mode") == "premarital":
         tags.append("예비신혼부부 가능 여부·혼인신고 기한 공고문 확인")
     return tags

@@ -484,6 +484,79 @@ def _build_rent(notice, min_area=0):
     return t
 
 
+def _fetch_gh_pdf(notice):
+    """GH 상세페이지 첨부(selectFileDown.do) 중 공고문 PDF bytes. 카탈로그보다 '공고문' 우선."""
+    from app.sources import GH_DETAIL, UA, gh_session
+
+    raw = notice.get("raw") or {}
+    pno = raw.get("pbancNo") or notice["id"].split(":")[-1]
+    s = gh_session()
+    r = s.get(GH_DETAIL, params={"previewYn": "N", "pbancNo": pno,
+                                 "pbancKndCd": raw.get("pbancKndCd") or "01",
+                                 "bizTyNm": raw.get("bizTyNm") or ""},
+              headers=UA, timeout=25, verify=False)
+    r.raise_for_status()
+    # <a href="/sr/sr7150/selectFileDown.do?...">파일명.pdf</a> — 파일명으로 공고문 우선순위
+    links = re.findall(r'href="(/sr/sr7150/selectFileDown\.do\?[^"]+)"[^>]*>(.*?)</a>', r.text, re.S)
+    cands = []
+    for href, label in links:
+        nm = re.sub(r"<[^>]+>", "", label).strip()
+        if ".pdf" not in nm.lower():
+            continue
+        cands.append((0 if "공고문" in nm else 1, href))
+    for _, href in sorted(cands)[:4]:
+        try:
+            fr = s.get("https://apply.gh.or.kr" + href.replace("&amp;", "&"),
+                       headers=UA, timeout=60, verify=False)
+            if fr.content[:4] == b"%PDF":
+                return fr.content
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _fetch_lh_rent_pdf(notice):
+    """LH 임대 공고문 PDF — 분양과 동일한 LH 사이트 크롤(_fetch_lh_pdf) 재사용."""
+    n = dict(notice)
+    n["name"] = re.sub(r"^\[[^\]]*\]\s*", "", n.get("name") or "")  # '[행복주택] ' 접두 제거
+    return _fetch_lh_pdf(n)
+
+
+def _build_public_rent(notice, min_area=0):
+    """LH임대·GH 공고 — 접수기간은 목록에 있고, 공고문 PDF에서 보증금/월세/평형을 뽑는다."""
+    t = {"kind": "rent", "apply_start": notice.get("r1_start"), "apply_end": notice.get("r1_end")}
+    src = notice.get("source")
+    try:
+        pdf = _fetch_gh_pdf(notice) if src == "gh" else _fetch_lh_rent_pdf(notice)
+    except Exception as e:  # noqa: BLE001
+        log.warning("%s 공고문 PDF 실패(%s): %s", src, notice.get("name"), e)
+        pdf = None
+    if pdf:
+        try:
+            price = _rent_price(pdf)
+            if price:
+                t.update(price)
+            if min_area:
+                t["units"] = _rent_units(pdf, min_area)
+        except Exception as e:  # noqa: BLE001
+            log.warning("임대료 표 파싱 실패(%s): %s", notice.get("name"), e)
+        if not t.get("deposit_manwon"):  # 표 못 찾으면 LLM 폴백
+            s = llm_settings()
+            if s.get("provider"):
+                try:
+                    lt = _llm_terms(pdf, s, RENT_PROMPT, RENT_SCHEMA, RENT_KEYWORDS) or {}
+                    for k in ("deposit_manwon", "monthly_manwon", "area_m2", "note"):
+                        if lt.get(k) and not t.get(k):
+                            t[k] = lt[k]
+                except Exception as e:  # noqa: BLE001
+                    log.warning("임대 LLM 폴백 실패(%s): %s", notice.get("name"), e)
+    if not t.get("area_m2"):  # GH 상세의 전용면적 범위(예: '26.9294 ~ 51.9289') 최저값
+        m = re.search(r"(\d+(?:\.\d+)?)", (notice.get("raw") or {}).get("area_text") or "")
+        if m:
+            t["area_m2"] = round(float(m.group(1)), 1)
+    return t
+
+
 def _build_applyhome_rent(notice, min_area=0):
     """공공지원 민간임대(청약홈) — 접수기간은 API에 이미 있으니 공고문 PDF로 보증금/월세만 뽑는다."""
     url = notice.get("url")
@@ -752,6 +825,8 @@ def enrich(notice, cfg, force=False):
             result = _build_rent(notice, min_area)
         elif src == "applyhome_rent":
             result = _build_applyhome_rent(notice, min_area)
+        elif src in ("lh_rent", "gh"):
+            result = _build_public_rent(notice, min_area)
     except Exception as e:  # noqa: BLE001
         log.warning("%s LLM 분석 실패: %s", notice.get("name"), e)
     _cache_put(nid, result, ok=bool(result))

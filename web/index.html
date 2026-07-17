@@ -193,7 +193,7 @@ const $ = s => document.querySelector(s);
 /* 공고 종류: 분양(applyhome·lh) / 무순위(applyhome_remndr) / 임대(applyhome_rent·board) */
 function catOf(n){
   if(n.source==='applyhome_remndr') return 'remndr';
-  if(n.source==='applyhome_rent' || n.source==='board') return 'rent';
+  if(['applyhome_rent','board','lh_rent','gh'].includes(n.source)) return 'rent';
   return 'sale';
 }
 function urgencyOf(j){ if(j.k==='done') return 99999; if(j.num==='오늘') return 0;
