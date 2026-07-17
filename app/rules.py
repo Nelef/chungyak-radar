@@ -41,9 +41,12 @@ def load_config() -> dict:
 
 def match_region(n: dict, cfg: dict) -> bool:
     region = (n.get("region") or "") + " " + (n.get("address") or "")
-    if cfg["regions"].get("seoul") and "서울" in region:
+    regions = cfg.get("regions") or {}
+    if regions.get("seoul") and "서울" in region:
         return True
-    for city in cfg["regions"].get("gyeonggi_cities", []):
+    if regions.get("gyeonggi_all") and ("경기" in region or "경기도" in region):
+        return True  # 경기 전역 허용 — 통근 1시간 초과는 process()의 통근필터가 제외
+    for city in regions.get("gyeonggi_cities", []):
         if city in region:
             return True
     return False
@@ -161,13 +164,15 @@ def build_rental_tags(n: dict, cfg: dict) -> list[str]:
         tags.append("청년안심 — 특공은 소득 120% 초과로 불가, 일반공급으로만 신청")
     if "신혼희망" in name:
         tags.append("⚠ 신혼희망타운 — 수익공유형 확인")
+    # (도시근로자 월평균소득 %는 대략치 — 실제는 가구원수·연도별 공고문 확인)
     kind = (n.get("house_kind") or "") + name
     if "행복주택" in kind:
-        tags.append("행복주택 — 청년·신혼 대상, 소득요건 확인(맞벌이 완화). 대출규제 무관")
+                    "자녀 생겨 3인 되면 가능. 공고문 소득표 확인")
     elif "국민임대" in kind:
-        tags.append("국민임대 — 소득·자산 요건, 장기거주(최장 30년). 대출규제 무관")
-    elif "공공임대" in kind:  # 통합공공임대 포함
-        tags.append("공공임대 — 소득·자산 요건 확인, 장기거주 가능. 대출규제 무관")
+    elif "통합공공임대" in kind:
+    elif "공공임대" in kind:  # 5·10년 공공임대(분양전환)
+        tags.append("공공임대(분양전환) — 소득·자산 요건 확인. 향후 분양전환 가능, 대출규제 무관")
+    elif "장기전세" in kind:
     if cfg.get("mode") == "premarital":
         tags.append("예비신혼부부 가능 여부·혼인신고 기한 공고문 확인")
     return tags
