@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS notices (
     flags         TEXT,                  -- JSON: 투기과열/분상제/공공택지 등 원본 플래그
     tags          TEXT,                  -- JSON: 우리 규칙으로 붙인 태그 목록
     matched       INTEGER DEFAULT 0,     -- 필터 통과 여부
+    commute_min   INTEGER,               -- 목적지 대중교통 소요분(지오코딩 실패 시 NULL)
     first_seen    TEXT NOT NULL,
     raw           TEXT
 );
@@ -55,6 +56,10 @@ def conn():
 def init():
     with conn() as c:
         c.executescript(SCHEMA)
+        try:  # 기존 DB 마이그레이션(통근시간 컬럼 추가)
+            c.execute("ALTER TABLE notices ADD COLUMN commute_min INTEGER")
+        except sqlite3.OperationalError:
+            pass  # 이미 있음
 
 
 def now_kst() -> str:
@@ -69,8 +74,9 @@ def upsert_notice(n: dict) -> bool:
         c.execute(
             """INSERT INTO notices (id, source, name, house_kind, region, address,
                  total_supply, notice_date, sp_start, sp_end, r1_start, r1_end,
-                 r2_start, r2_end, winner_date, url, flags, tags, matched, first_seen, raw)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 r2_start, r2_end, winner_date, url, flags, tags, matched,
+                 commute_min, first_seen, raw)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                  name=excluded.name, house_kind=excluded.house_kind,
                  region=excluded.region, address=excluded.address,
@@ -80,7 +86,7 @@ def upsert_notice(n: dict) -> bool:
                  r2_start=excluded.r2_start, r2_end=excluded.r2_end,
                  winner_date=excluded.winner_date, url=excluded.url,
                  flags=excluded.flags, tags=excluded.tags, matched=excluded.matched,
-                 raw=excluded.raw""",
+                 commute_min=excluded.commute_min, raw=excluded.raw""",
             (
                 n["id"], n["source"], n["name"], n.get("house_kind"), n.get("region"),
                 n.get("address"), n.get("total_supply"), n.get("notice_date"),
@@ -89,6 +95,7 @@ def upsert_notice(n: dict) -> bool:
                 json.dumps(n.get("flags", {}), ensure_ascii=False),
                 json.dumps(n.get("tags", []), ensure_ascii=False),
                 1 if n.get("matched") else 0,
+                n.get("commute_min"),
                 now_kst(),
                 json.dumps(n.get("raw", {}), ensure_ascii=False),
             ),
