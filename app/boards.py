@@ -89,11 +89,12 @@ def _sh_apply_period(html: str):
         i = text.find(lab)
         if i < 0:
             continue
-        ds = _DATE_ANY.findall(text[i:i + 140])
+        ds = [_iso_date(x) for x in _DATE_ANY.findall(text[i:i + 140])]
+        ds = [d for d in ds if d]
         if ds:
-            start = _iso_date(ds[0])
-            if start:
-                return start, (_iso_date(ds[1]) if len(ds) > 1 else None)
+            start = ds[0]
+            end = next((d for d in ds[1:] if d >= start), None)  # 시작보다 빠른 날짜는 종료로 안 씀
+            return start, end
     return None, None
 
 
@@ -161,7 +162,9 @@ def _scrape_sh_board(board: dict) -> list[dict]:
     pages = int(board.get("pages", 2))
     out, seen = [], set()
     for pg in range(1, pages + 1):
-        url = board["list_url"] if pg == 1 else f"{board['list_url']}?page={pg}"
+        # isRecrnoti=Y = SH '접수중 모집공고'만 준다(발표·경쟁률·주택공개 자동 제외,
+        # 목록 1페이지에서 밀려난 접수중 공고도 회수). view.do 링크는 list_url(쿼리 없음)로 만든다.
+        url = f"{board['list_url']}?isRecrnoti=Y" + (f"&page={pg}" if pg > 1 else "")
         try:
             r = requests.get(url, headers=HEADERS, timeout=30)
             r.raise_for_status()

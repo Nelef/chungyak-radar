@@ -401,17 +401,49 @@ RENT_SCHEMA = {
     "properties": {
         "apply_start": {"type": "STRING"}, "apply_end": {"type": "STRING"},
         "deposit_manwon": {"type": "NUMBER"}, "monthly_manwon": {"type": "NUMBER"},
-        "area_m2": {"type": "NUMBER"}, "note": {"type": "STRING"},
+        "area_m2": {"type": "NUMBER"},
+        "move_in": {"type": "STRING"}, "lease_term": {"type": "STRING"},
+        "contract_pct": {"type": "NUMBER"}, "rank_advice": {"type": "STRING"},
+        "note": {"type": "STRING"},
     },
     "required": ["apply_start", "apply_end"],
 }
-RENT_PROMPT = (
-    "아래 청년안심주택(민간임대) 입주자모집공고문에서 JSON 객체 하나만 출력하라. 설명 없이 JSON만. "
-    "키: apply_start(청약/신청 접수 시작일 YYYY-MM-DD), apply_end(접수 마감일 YYYY-MM-DD), "
-    "deposit_manwon(임대보증금=계약 시 목돈으로 내는 큰 금액, 만원 단위 숫자, 여러 타입이면 최저), "
-    "monthly_manwon(월 임대료=매달 내는 작은 금액, 만원 단위, 없으면 0), "
-    "area_m2(전용면적 최소 ㎡), note(특이사항 한 줄). 보증금과 월임대료를 혼동하지 말 것."
-)
+
+
+def _rent_prompt(profile=None):
+    return (
+        "아래 임대주택(청년안심·SH 매입임대·공공임대 등) 입주자모집공고문에서 JSON 객체 하나만 출력하라. "
+        "설명·마크다운 없이 JSON만. "
+        "키: apply_start(청약/신청 접수 시작일 YYYY-MM-DD), apply_end(접수 마감일 YYYY-MM-DD), "
+        "deposit_manwon(임대보증금=계약 시 목돈으로 내는 큰 금액, 만원 단위 숫자, 여러 타입이면 최저), "
+        "monthly_manwon(월 임대료=매달 내는 작은 금액, 만원 단위, 없으면 0), "
+        "area_m2(전용면적 최소 ㎡), "
+        "move_in(입주 가능일/입주예정일 YYYY-MM-DD, 없으면 공고문 표기 그대로, 없으면 ''), "
+        "lease_term(임대(거주) 계약기간 문자열, 예 '2년'·'최장 6년', 없으면 ''), "
+        "contract_pct(계약금 비율 % — 보증금 대비, 공고문에 명시 없으면 10), "
+        f"rank_advice(신청자 상황: {_who(profile)}. 이 임대 공고에서 신청 가능한 공급유형(특별/우선/일반)과 "
+        "소득·자산 기준 충족 여부를 한국어 2~3문장으로 조언), "
+        "note(특이사항 한 줄). 보증금과 월임대료를 혼동하지 말 것."
+    )
+
+
+def _rent_llm_merge(t, pdf, profile):
+    """임대: 신청기간·입주가능일·거주기간·계약금율·자격조언 같은 정성 필드를 LLM으로 채운다.
+    보증금/월세/전용은 pdfplumber 표 파싱이 우선이라 이미 있으면 덮지 않는다(not t.get)."""
+    s = llm_settings()
+    if not (s.get("provider") and pdf):
+        return
+    try:
+        lt = _llm_terms(pdf, s, _rent_prompt(profile), RENT_SCHEMA, RENT_KEYWORDS) or {}
+    except LLMDownError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        log.warning("임대 LLM 보강 실패: %s", e)
+        return
+    for k in ("apply_start", "apply_end", "deposit_manwon", "monthly_manwon", "area_m2",
+              "move_in", "lease_term", "contract_pct", "rank_advice", "note"):
+        if lt.get(k) and not t.get(k):
+            t[k] = lt[k]
 
 
 def _rent_price(pdf_bytes):
@@ -472,7 +504,7 @@ def _rent_price(pdf_bytes):
     return {"deposit_manwon": best[0], "monthly_manwon": best[1], "area_m2": best[2]}
 
 
-def _build_rent(notice, min_area=0):
+def _build_rent(notice, min_area=0, profile=None):
     aid = (notice.get("raw") or {}).get("atchFileId")
     if not aid:
         return None
@@ -483,8 +515,8 @@ def _build_rent(notice, min_area=0):
     pdf = fr.content
     s = llm_settings()
     t = {}
-    if s.get("provider"):  # 날짜(신청 시작·마감)는 LLM으로
-        t = _llm_terms(pdf, s, RENT_PROMPT, RENT_SCHEMA, RENT_KEYWORDS) or {}
+    if s.get("provider"):  # 신청기간·입주·거주기간·계약금·자격조언은 LLM으로
+        t = _llm_terms(pdf, s, _rent_prompt(profile), RENT_SCHEMA, RENT_KEYWORDS) or {}
     try:  # 보증금/월세/전용은 pdfplumber 표 파싱으로 덮어씀(결정론적·정확)
         price = _rent_price(pdf)
         if price:
@@ -539,7 +571,7 @@ def _fetch_lh_rent_pdf(notice):
     return _fetch_lh_pdf(n)
 
 
-def _build_public_rent(notice, min_area=0):
+def _build_public_rent(notice, min_area=0, profile=None):
     """LH임대·GH 공고 — 접수기간은 목록에 있고, 공고문 PDF에서 보증금/월세/평형을 뽑는다."""
     t = {"kind": "rent", "apply_start": notice.get("r1_start"), "apply_end": notice.get("r1_end")}
     src = notice.get("source")
@@ -549,7 +581,7 @@ def _build_public_rent(notice, min_area=0):
         log.warning("%s 공고문 PDF 실패(%s): %s", src, notice.get("name"), e)
         pdf = None
     if pdf:
-        try:
+        try:  # 보증금/월세/전용은 표 파싱(결정론적) 우선
             price = _rent_price(pdf)
             if price:
                 t.update(price)
@@ -557,18 +589,7 @@ def _build_public_rent(notice, min_area=0):
                 t["units"] = _rent_units(pdf, min_area)
         except Exception as e:  # noqa: BLE001
             log.warning("임대료 표 파싱 실패(%s): %s", notice.get("name"), e)
-        if not t.get("deposit_manwon"):  # 표 못 찾으면 LLM 폴백
-            s = llm_settings()
-            if s.get("provider"):
-                try:
-                    lt = _llm_terms(pdf, s, RENT_PROMPT, RENT_SCHEMA, RENT_KEYWORDS) or {}
-                    for k in ("deposit_manwon", "monthly_manwon", "area_m2", "note"):
-                        if lt.get(k) and not t.get(k):
-                            t[k] = lt[k]
-                except LLMDownError:
-                    raise
-                except Exception as e:  # noqa: BLE001
-                    log.warning("임대 LLM 폴백 실패(%s): %s", notice.get("name"), e)
+        _rent_llm_merge(t, pdf, profile)  # 입주·거주기간·계약금·자격조언 + 표 실패 시 보증금 폴백
     if not t.get("area_m2"):  # GH 상세의 전용면적 범위(예: '26.9294 ~ 51.9289') 최저값
         m = re.search(r"(\d+(?:\.\d+)?)", (notice.get("raw") or {}).get("area_text") or "")
         if m:
@@ -576,7 +597,7 @@ def _build_public_rent(notice, min_area=0):
     return t
 
 
-def _build_applyhome_rent(notice, min_area=0):
+def _build_applyhome_rent(notice, min_area=0, profile=None):
     """공공지원 민간임대(청약홈) — 접수기간은 API에 이미 있으니 공고문 PDF로 보증금/월세만 뽑는다."""
     url = notice.get("url")
     t = {"kind": "rent", "apply_start": notice.get("r1_start"), "apply_end": notice.get("r1_end")}
@@ -590,18 +611,7 @@ def _build_applyhome_rent(notice, min_area=0):
                 t["units"] = _rent_units(pdf, min_area)
         except Exception as e:  # noqa: BLE001
             log.warning("임대료 표 파싱 실패(%s): %s", notice.get("name"), e)
-        if not t.get("deposit_manwon"):  # 표 못 찾으면 LLM 폴백
-            s = llm_settings()
-            if s.get("provider"):
-                try:
-                    lt = _llm_terms(pdf, s, RENT_PROMPT, RENT_SCHEMA, RENT_KEYWORDS) or {}
-                    for k in ("deposit_manwon", "monthly_manwon", "area_m2", "note"):
-                        if lt.get(k) and not t.get(k):
-                            t[k] = lt[k]
-                except LLMDownError:
-                    raise
-                except Exception as e:  # noqa: BLE001
-                    log.warning("임대 LLM 폴백 실패(%s): %s", notice.get("name"), e)
+        _rent_llm_merge(t, pdf, profile)  # 입주·거주기간·계약금·자격조언 + 표 실패 시 보증금 폴백
     return t
 
 
@@ -856,12 +866,14 @@ def enrich(notice, cfg, force=False):
             regulated = bool(flags.get("투기과열") or flags.get("조정대상"))
             result = _build(notice, regulated, ccfg, (cfg or {}).get("profile"),
                             remndr=(src == "applyhome_remndr"))
-        elif src == "board":
-            result = _build_rent(notice, min_area)
-        elif src == "applyhome_rent":
-            result = _build_applyhome_rent(notice, min_area)
-        elif src in ("lh_rent", "gh"):
-            result = _build_public_rent(notice, min_area)
+        else:
+            profile = (cfg or {}).get("profile")
+            if src == "board":
+                result = _build_rent(notice, min_area, profile)
+            elif src == "applyhome_rent":
+                result = _build_applyhome_rent(notice, min_area, profile)
+            elif src in ("lh_rent", "gh"):
+                result = _build_public_rent(notice, min_area, profile)
     except LLMDownError as e:  # 서버 죽음: 실패로 캐시하지 말고(=재시도 가능) 명시적 오류 반환
         log.warning("%s LLM 서버 응답 없음: %s", notice.get("name"), e)
         return {"error": "llm_down", "detail": str(e)[:200]}

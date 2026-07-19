@@ -334,6 +334,16 @@ function llmBox(L){
     if(L.monthly_manwon)p.push('월 '+L.monthly_manwon+'만'); if(L.area_m2)p.push('전용 '+L.area_m2+'㎡');
     let inner = `<b>🏠 임대조건</b> ${esc(p.join(' · '))||'-'}`;
     if(L.apply_start) inner += `<div>신청 ${fr(L.apply_start,L.apply_end)||esc(L.apply_start)}</div>`;
+    // 입주 가능일 / 거주기간
+    const io=[]; if(L.move_in)io.push('입주 '+esc(whenFmt(L.move_in))); if(L.lease_term)io.push('거주 '+esc(L.lease_term));
+    if(io.length) inner += `<div class="muted">${io.join(' · ')}</div>`;
+    // 계약 시 필요현금(계약금=보증금×계약금율) + 입주 시 잔금
+    if(L.deposit_manwon){
+      const cp = L.contract_pct || 10, down = Math.round(L.deposit_manwon*cp/100);
+      inner += `<div><b>💵 계약 시 필요현금</b> ${money(down)} `
+        + `<span class="muted">(계약금 ${cp}%) · 입주 시 잔금 ${money(L.deposit_manwon-down)}</span></div>`;
+    }
+    if(L.rank_advice) inner += `<div><b>🤖 자격</b> ${esc(L.rank_advice)}</div>`;
     if(L.note) inner += `<div class="muted">${esc(L.note)}</div>`;
     return inner + unitsHtml(L);
   }
