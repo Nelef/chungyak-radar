@@ -67,6 +67,36 @@ def _keyword_ok(board: dict, title: str) -> bool:
     return (not kws) or any(kw in title for kw in kws)
 
 
+# SH 상세 본문에서 접수기간을 뽑기 위한 라벨/날짜 패턴.
+# 라벨 뒤 좁은 창에서 날짜 1~2개를 접수 시작·마감으로 본다.
+_APPLY_LABELS = ("모집신청일", "접수기간", "신청기간", "접수 기간", "청약접수", "청약 접수", "신청 접수", "접수일정")
+_DATE_ANY = re.compile(r"20\d{2}\s*[.\-/년]\s*\d{1,2}\s*[.\-/월]\s*\d{1,2}")
+
+
+def _iso_date(s: str):
+    n = re.findall(r"\d+", s)
+    try:
+        return f"{int(n[0]):04d}-{int(n[1]):02d}-{int(n[2]):02d}"
+    except (IndexError, ValueError):
+        return None
+
+
+def _sh_apply_period(html: str):
+    """SH 상세 본문에서 접수기간(시작, 마감)을 추출. 본문에 없으면(공고문 PDF에만 있거나
+    협동조합 직접지원 상시모집이면) (None, None). 잔여세대/협동조합류는 대부분 여기서 못 잡는다."""
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))
+    for lab in _APPLY_LABELS:
+        i = text.find(lab)
+        if i < 0:
+            continue
+        ds = _DATE_ANY.findall(text[i:i + 140])
+        if ds:
+            start = _iso_date(ds[0])
+            if start:
+                return start, (_iso_date(ds[1]) if len(ds) > 1 else None)
+    return None, None
+
+
 def _notice(board: dict, uid: str, title: str, link: str, posted, address="서울") -> dict:
     return {
         "id": f"board:{uid}",
@@ -141,7 +171,19 @@ def _scrape_sh_board(board: dict) -> list[dict]:
         seen.add(seq)
         row = a.find_parent("tr")
         posted = _norm_date(row.get_text(" ", strip=True)) if row else None
-        out.append(_notice(board, f"sh:{seq}", title, _sh_view_url(board["list_url"], seq), posted))
+        url = _sh_view_url(board["list_url"], seq)
+        n = _notice(board, f"sh:{seq}", title, url, posted)
+        # 상세 본문에서 접수기간을 뽑아 D-day/리마인더가 붙게 한다(LLM 불필요).
+        # 목록에는 접수일정이 없어 상세를 열어야 함. 실패해도 제목/링크는 유지.
+        try:
+            dr = requests.get(url, headers=HEADERS, timeout=12)
+            dr.raise_for_status()
+            s, e = _sh_apply_period(dr.text)
+            if s:
+                n["r1_start"], n["r1_end"] = s, e
+        except Exception as exc:  # noqa: BLE001
+            log.debug("SH 상세 접수기간 파싱 실패(%s): %s", seq, exc)
+        out.append(n)
     return out
 
 
