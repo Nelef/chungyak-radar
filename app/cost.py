@@ -25,6 +25,11 @@ from app import db
 
 log = logging.getLogger("cost")
 
+
+class LLMDownError(Exception):
+    """LLM 서버에 도달하지 못함(연결 실패·타임아웃·HTTP 오류).
+    '분석했으나 정보 없음'과 달리 실패를 캐시하지 않고, 대시보드에 '서버 죽음'으로 안내한다."""
+
 APPLYHOME_MDL = "https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1/getAPTLttotPblancMdl"
 REMNDR_MDL = "https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1/getRemndrLttotPblancMdl"
 DETAIL_URL = "https://www.applyhome.co.kr/ai/aia/selectAPTLttotPblancDetail.do"
@@ -228,9 +233,12 @@ def _gemini_terms(pdf_bytes, model, api_key, prompt=None, schema=None):
             "responseSchema": schema or GEMINI_SCHEMA,
         },
     }
-    r = requests.post(GEMINI_URL.format(model=model), json=body,
-                      headers={"x-goog-api-key": api_key}, timeout=150)
-    r.raise_for_status()
+    try:
+        r = requests.post(GEMINI_URL.format(model=model), json=body,
+                          headers={"x-goog-api-key": api_key}, timeout=150)
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise LLMDownError(str(e)) from e
     text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
     return json.loads(text)
 
@@ -292,8 +300,11 @@ def _openai_terms(pdf_bytes, s, prompt=None, keywords=None):
         "chat_template_kwargs": {"enable_thinking": False},
     }
     url = s["base_url"].rstrip("/") + "/v1/chat/completions"
-    r = requests.post(url, json=body, headers=headers, timeout=180)
-    r.raise_for_status()
+    try:
+        r = requests.post(url, json=body, headers=headers, timeout=180)
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise LLMDownError(str(e)) from e
     return _parse_json(r.json()["choices"][0]["message"]["content"])
 
 
@@ -344,17 +355,23 @@ def _llm_json(prompt, s):
         body = {"model": s.get("model") or "gemma-4-26b", "temperature": 0, "max_tokens": 600,
                 "chat_template_kwargs": {"enable_thinking": False},
                 "messages": [{"role": "user", "content": prompt}]}
-        r = requests.post(s["base_url"].rstrip("/") + "/v1/chat/completions", json=body, headers=headers, timeout=120)
-        r.raise_for_status()
+        try:
+            r = requests.post(s["base_url"].rstrip("/") + "/v1/chat/completions", json=body, headers=headers, timeout=120)
+            r.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            raise LLMDownError(str(e)) from e
         return _parse_json(r.json()["choices"][0]["message"]["content"])
     if prov == "gemini":
         body = {"contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {"temperature": 0, "maxOutputTokens": 600,
                                      "thinkingConfig": {"thinkingBudget": 0},
                                      "responseMimeType": "application/json"}}
-        r = requests.post(GEMINI_URL.format(model=s.get("model") or "gemini-flash-latest"),
-                          json=body, headers={"x-goog-api-key": s["api_key"]}, timeout=120)
-        r.raise_for_status()
+        try:
+            r = requests.post(GEMINI_URL.format(model=s.get("model") or "gemini-flash-latest"),
+                              json=body, headers={"x-goog-api-key": s["api_key"]}, timeout=120)
+            r.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            raise LLMDownError(str(e)) from e
         return _parse_json(r.json()["candidates"][0]["content"]["parts"][0]["text"])
     return None
 
@@ -548,6 +565,8 @@ def _build_public_rent(notice, min_area=0):
                     for k in ("deposit_manwon", "monthly_manwon", "area_m2", "note"):
                         if lt.get(k) and not t.get(k):
                             t[k] = lt[k]
+                except LLMDownError:
+                    raise
                 except Exception as e:  # noqa: BLE001
                     log.warning("임대 LLM 폴백 실패(%s): %s", notice.get("name"), e)
     if not t.get("area_m2"):  # GH 상세의 전용면적 범위(예: '26.9294 ~ 51.9289') 최저값
@@ -579,6 +598,8 @@ def _build_applyhome_rent(notice, min_area=0):
                     for k in ("deposit_manwon", "monthly_manwon", "area_m2", "note"):
                         if lt.get(k) and not t.get(k):
                             t[k] = lt[k]
+                except LLMDownError:
+                    raise
                 except Exception as e:  # noqa: BLE001
                     log.warning("임대 LLM 폴백 실패(%s): %s", notice.get("name"), e)
     return t
@@ -748,6 +769,8 @@ def _build(notice, regulated, ccfg, profile=None, remndr=False):
                 pdf = _fetch_lh_pdf(notice)
             if pdf:
                 terms = _llm_terms(pdf, s, _sale_prompt(profile, remndr), SALE_SCHEMA, SALE_KEYWORDS)
+        except LLMDownError:  # 서버 죽음은 삼키지 말고 위로 전달 → 대시보드가 '서버 죽음' 안내
+            raise
         except Exception as e:  # noqa: BLE001
             log.warning("LLM 조건 추출 실패(%s): %s", notice.get("name"), e)
     if not terms:  # 공고문 PDF 없음(LH 공공분양 등) → 계약금 가정 + 순위조언은 메타데이터로
@@ -758,6 +781,8 @@ def _build(notice, regulated, ccfg, profile=None, remndr=False):
                 rank = _llm_json(_meta_rank_prompt(notice, lo, profile, remndr), s)
                 if rank and rank.get("rank_advice"):
                     terms["rank_advice"] = rank["rank_advice"]
+            except LLMDownError:
+                raise
             except Exception as e:  # noqa: BLE001
                 log.warning("순위조언(메타) 실패(%s): %s", notice.get("name"), e)
     # 신혼희망타운은 수익공유형 모기지(LTV70·정액 4억 캡). 그 외는 규제/비규제 LTV.
@@ -827,6 +852,9 @@ def enrich(notice, cfg, force=False):
             result = _build_applyhome_rent(notice, min_area)
         elif src in ("lh_rent", "gh"):
             result = _build_public_rent(notice, min_area)
+    except LLMDownError as e:  # 서버 죽음: 실패로 캐시하지 말고(=재시도 가능) 명시적 오류 반환
+        log.warning("%s LLM 서버 응답 없음: %s", notice.get("name"), e)
+        return {"error": "llm_down", "detail": str(e)[:200]}
     except Exception as e:  # noqa: BLE001
         log.warning("%s LLM 분석 실패: %s", notice.get("name"), e)
     _cache_put(nid, result, ok=bool(result))

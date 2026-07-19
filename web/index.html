@@ -99,6 +99,11 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 .llm b{color:var(--navy)} .llm div{margin-top:3px}
 .llm .muted{color:var(--muted); font-size:12px}
 .llm.hot{background:#FFF7E6; border-color:#E7C766}
+.llm.err{background:#FDECEC; border-color:#E7A0A0; color:#8A1C1C}
+.llm.err b{color:#8A1C1C}
+.card.focus{outline:3px solid var(--navy); outline-offset:2px;
+  animation:focusPulse 1.2s ease-out 2}
+@keyframes focusPulse{0%{box-shadow:0 0 0 0 rgba(0,32,96,.35)} 100%{box-shadow:0 0 0 14px rgba(0,32,96,0)}}
 .llmfoot{margin-top:8px} .llmfoot .analyze{margin-top:0}
 .units{margin-top:6px; padding-top:6px; border-top:1px dashed #C9D6E5}
 .units .urow{font-size:13px; font-variant-numeric:tabular-nums}
@@ -257,7 +262,7 @@ function card(n){
   const nm = n.url ? `<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.name)}</a>` : esc(n.name);
   const mq = n.address || n.name || '';
   const mapBtn = mq ? ` · <a class="maplink" href="https://map.kakao.com/link/search/${encodeURIComponent(mq)}" target="_blank" rel="noopener">🗺 지도</a>` : '';
-  return `<div class="card" data-k="${j.k}">
+  return `<div class="card" data-k="${j.k}" data-nid="${esc(n.id)}">
     <div class="dday ${j.k}"><span class="num">${j.num==='오늘'?'오늘':j.num}</span><span class="lbl">${j.lbl}</span></div>
     <div class="body">
       <div class="name">${nm}</div>
@@ -284,13 +289,17 @@ function histHtml(n){
   return `<div class="muted" style="margin-top:6px">이전: ${prev}</div>`;
 }
 function llmHtml(n){
-  if(n._loading && !n.enriched) return `<button class="analyze" disabled>분석 중… (LLM)</button>`;
-  if(!n.enriched) return `<button class="analyze" onclick="enrichNotice('${n.id}')">🔄 LLM 분석</button>`;
+  // LLM 서버가 죽었을 때: 공고를 없애지 않고 배너로 안내(버튼은 '다시 시도'로 유지)
+  const errBanner = n._llmError
+    ? `<div class="llm err">⚠️ <b>LLM 서버 응답 없음</b> — 분석하지 못했습니다. 서버(gemma4 등) 상태를 확인한 뒤 다시 시도하세요.</div>`
+    : '';
+  if(n._loading && !n.enriched) return errBanner + `<button class="analyze" disabled>분석 중… (LLM)</button>`;
+  if(!n.enriched) return errBanner + `<button class="analyze" onclick="enrichNotice('${n.id}')">${n._llmError?'🔁 다시 시도':'🔄 LLM 분석'}</button>`;
   const L = n.llm;
   // 재분석 중이면 이전 결과는 그대로 두고 푸터만 '분석 중…'
   const again = n._loading ? `<span class="muted">🔄 분석 중…</span>`
     : `<button class="analyze" onclick="enrichNotice('${n.id}',true)">🔄 다시</button>`;
-  if(!L) return `<div class="llm"><span class="muted">분석함 · 정보를 못 찾음</span><div class="llmfoot">${again}</div></div>`;
+  if(!L) return errBanner + `<div class="llm"><span class="muted">분석함 · 정보를 못 찾음</span><div class="llmfoot">${again}</div></div>`;
   let inner;
   if(L.kind==='rent'){
     const p=[]; if(L.deposit_manwon)p.push('보증금 '+money(L.deposit_manwon));
@@ -307,7 +316,7 @@ function llmHtml(n){
       + `<div class="muted">분양가 ${price}${ar} · 계약 최소현금 ${money(L.entry_cash)}(계약금 ${L.contract_pct}%${L.estimated?' 가정':''})</div>`;
     if(L.rank_advice) inner += `<div><b>🤖 순위</b> ${esc(L.rank_advice)}</div>`;
   }
-  return `<div class="llm ${L.highlight?'hot':''}">${inner}${unitsHtml(L)}${histHtml(n)}<div class="llmfoot">${again}</div></div>`;
+  return errBanner + `<div class="llm ${L.highlight?'hot':''}">${inner}${unitsHtml(L)}${histHtml(n)}<div class="llmfoot">${again}</div></div>`;
 }
 function unitsHtml(L){
   const U = L.units||[]; if(!U.length) return '';
@@ -326,12 +335,16 @@ function unitsHtml(L){
 }
 async function enrichNotice(id, force){
   const n = NOTICES.find(x=>x.id===id); if(!n) return;
-  n._loading = true; render();
+  n._loading = true; n._llmError = null; render();
   try{
     const res = await (await fetch('/api/enrich',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id, force: !!force})})).json();
-    n.enriched = true; n.llm = res.llm;
-    if(res.llm_history) n.llm_history = res.llm_history;
-  }catch(e){ /* keep button */ }
+    if(res.error){          // LLM 서버 죽음 등: 공고는 그대로 두고 배너만 띄움(재시도 가능)
+      n._llmError = res.error;
+    }else{
+      n.enriched = true; n.llm = res.llm;
+      if(res.llm_history) n.llm_history = res.llm_history;
+    }
+  }catch(e){ n._llmError = 'network'; }  // 우리 서버조차 응답 없음
   n._loading = false; render();
 }
 
@@ -400,6 +413,29 @@ async function loadNotices(){
   NOTICES = await (await fetch('/api/notices')).json();
   render();
 }
+
+/* 알림(텔레그램) 링크의 #id=… 로 들어오면 해당 공고 카드로 스크롤+강조 */
+function cardEl(id){ return $('#list').querySelector('.card[data-nid="'+id.replace(/(["\\])/g,'\\$1')+'"]'); }
+function syncTabs(){
+  document.querySelectorAll('#statTabs button').forEach(b=>b.setAttribute('aria-pressed', String(b.dataset.f===FILTER)));
+  document.querySelectorAll('#catTabs button').forEach(b=>b.setAttribute('aria-pressed', String(b.dataset.c===CAT)));
+}
+function focusFromHash(){
+  const m = /[#&]id=([^&]*)/.exec(location.hash || '');
+  if(!m) return;
+  const id = decodeURIComponent(m[1]);
+  if(!NOTICES.some(x=>x.id===id)) return;   // 아직 수집 안 된 공고
+  let el = cardEl(id);
+  if(!el){                                   // 필터에 가려 있으면 전체 보기로 열어줌
+    FILTER = 'all'; CAT = 'all'; syncTabs(); render(); el = cardEl(id);
+  }
+  if(el){
+    el.scrollIntoView({behavior:'smooth', block:'center'});
+    el.classList.remove('focus'); void el.offsetWidth;  // 재클릭 시 애니메이션 재생
+    el.classList.add('focus');
+  }
+}
+window.addEventListener('hashchange', focusFromHash);
 
 function wireTabs(sel, apply){
   const btns = document.querySelectorAll(sel+' button');
@@ -487,7 +523,7 @@ $('#setSave').addEventListener('click', async ()=>{
   loadSettings();
 });
 
-loadStatus().then(loadNotices);
+loadStatus().then(loadNotices).then(focusFromHash);
 setInterval(()=>{ loadStatus(); loadNotices(); }, 5*60*1000);
 </script>
 </body>

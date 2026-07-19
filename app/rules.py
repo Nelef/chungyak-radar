@@ -6,6 +6,7 @@ config.yaml 기준으로 관심 지역을 거르고,
 """
 import os
 from datetime import date
+from urllib.parse import quote
 
 import yaml
 
@@ -192,8 +193,17 @@ def _dash_url() -> str:
     return load_config().get("dashboard_url") or DASHBOARD_URL
 
 
+def _notice_url(n: dict) -> str:
+    """대시보드 링크에 공고 id 프래그먼트(#id=…)를 붙여 클릭 시 해당 공고 카드로 바로 이동."""
+    base = _dash_url()
+    nid = n.get("id")
+    if not nid:
+        return base
+    return f"{base}#id={quote(str(nid), safe='')}"
+
+
 def new_notice_message(n: dict) -> str:
-    """텔레그램은 최소 정보만: 공고명 · 지역/유형 · 핵심 일정 · 대시보드 링크."""
+    """텔레그램은 최소 정보만: 공고명 · 지역/유형 · 핵심 일정 · 대시보드 링크(해당 공고로 이동)."""
     lines = [f"🏠 <b>{n['name']}</b>"]
     sub = " · ".join(x for x in (n.get("region"), n.get("house_kind")) if x)
     if sub:
@@ -201,7 +211,7 @@ def new_notice_message(n: dict) -> str:
     when = n.get("sp_start") or n.get("r1_start") or n.get("notice_date")
     if when:
         lines.append(f"접수 {str(when)[5:].replace('-', '.')}~")
-    lines.append(_dash_url())
+    lines.append(_notice_url(n))
     return "\n".join(lines)
 
 
@@ -210,7 +220,7 @@ def reminder_message(n: dict, days_left: int, what: str) -> str:
     return (
         f"⏰ <b>{dday}: {what}</b>\n"
         f"<b>{n['name']}</b>\n"
-        + _dash_url()
+        + _notice_url(n)
     )
 
 

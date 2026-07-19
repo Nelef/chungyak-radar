@@ -150,4 +150,7 @@ def api_enrich(payload: dict = Body(...)):
     if not n:
         return JSONResponse({"error": "not found"}, status_code=404)
     result = cost.enrich(n, rules.load_config(), bool((payload or {}).get("force")))
+    if isinstance(result, dict) and result.get("error"):
+        # LLM 서버 죽음 등: 분석 완료로 표시하지 않음(공고 유지 + 재시도 가능)
+        return {"enriched": False, "llm": None, "error": result["error"]}
     return {"enriched": True, "llm": result, "llm_history": cost.cache_history(nid)}
