@@ -155,35 +155,44 @@ def _sh_view_url(list_url: str, seq: str) -> str:
 
 
 def _scrape_sh_board(board: dict) -> list[dict]:
-    """SH 글 링크는 onclick=getDetailView('seq'); seq로 view.do?seq= 링크를 만든다."""
-    r = requests.get(board["list_url"], headers=HEADERS, timeout=30)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
+    """SH 글 링크는 onclick=getDetailView('seq'); seq로 view.do?seq= 링크를 만든다.
+    목록은 ?page=N으로 넘긴다(기본 1페이지=파라미터 없음). 접수 중인데 1페이지에서
+    밀려난 공고까지 잡으려면 pages를 늘린다(config boards.pages)."""
+    pages = int(board.get("pages", 2))
     out, seen = [], set()
-    for a in soup.select("a[onclick]"):
-        m = re.search(r"getDetailView\('?(\d+)'?\)", a.get("onclick", ""))
-        if not m:
-            continue
-        seq = m.group(1)
-        title = " ".join(a.get_text(" ", strip=True).replace("NEW", "").split())
-        if len(title) < 6 or seq in seen or not _keyword_ok(board, title):
-            continue
-        seen.add(seq)
-        row = a.find_parent("tr")
-        posted = _norm_date(row.get_text(" ", strip=True)) if row else None
-        url = _sh_view_url(board["list_url"], seq)
-        n = _notice(board, f"sh:{seq}", title, url, posted)
-        # 상세 본문에서 접수기간을 뽑아 D-day/리마인더가 붙게 한다(LLM 불필요).
-        # 목록에는 접수일정이 없어 상세를 열어야 함. 실패해도 제목/링크는 유지.
+    for pg in range(1, pages + 1):
+        url = board["list_url"] if pg == 1 else f"{board['list_url']}?page={pg}"
         try:
-            dr = requests.get(url, headers=HEADERS, timeout=12)
-            dr.raise_for_status()
-            s, e = _sh_apply_period(dr.text)
-            if s:
-                n["r1_start"], n["r1_end"] = s, e
-        except Exception as exc:  # noqa: BLE001
-            log.debug("SH 상세 접수기간 파싱 실패(%s): %s", seq, exc)
-        out.append(n)
+            r = requests.get(url, headers=HEADERS, timeout=30)
+            r.raise_for_status()
+        except Exception as e:  # noqa: BLE001
+            log.warning("SH 목록 %d페이지 실패: %s", pg, e)
+            continue
+        soup = BeautifulSoup(r.text, "html.parser")
+        for a in soup.select("a[onclick]"):
+            m = re.search(r"getDetailView\('?(\d+)'?\)", a.get("onclick", ""))
+            if not m:
+                continue
+            seq = m.group(1)
+            title = " ".join(a.get_text(" ", strip=True).replace("NEW", "").split())
+            if len(title) < 6 or seq in seen or not _keyword_ok(board, title):
+                continue
+            seen.add(seq)
+            row = a.find_parent("tr")
+            posted = _norm_date(row.get_text(" ", strip=True)) if row else None
+            view = _sh_view_url(board["list_url"], seq)
+            n = _notice(board, f"sh:{seq}", title, view, posted)
+            # 상세 본문에서 접수기간을 뽑아 D-day/리마인더가 붙게 한다(LLM 불필요).
+            # 목록에는 접수일정이 없어 상세를 열어야 함. 실패해도 제목/링크는 유지.
+            try:
+                dr = requests.get(view, headers=HEADERS, timeout=12)
+                dr.raise_for_status()
+                s, e = _sh_apply_period(dr.text)
+                if s:
+                    n["r1_start"], n["r1_end"] = s, e
+            except Exception as exc:  # noqa: BLE001
+                log.debug("SH 상세 접수기간 파싱 실패(%s): %s", seq, exc)
+            out.append(n)
     return out
 
 
