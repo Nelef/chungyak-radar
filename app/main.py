@@ -41,7 +41,7 @@ def run_collection() -> dict:
         if is_new:
             new_matched += 1
             key = f"{n['id']}:new"
-            if not db.already_sent(key):
+            if not db.is_muted(n["id"]) and not db.already_sent(key):  # 알림 끈 공고는 발송 제외
                 notify.send_telegram(rules.new_notice_message(n))
                 db.mark_sent(key)
     # 크롤 피드에서 밀려나 재평가 안 되는 기존 게시판 행 정리(노이즈 키워드 + 노후)
@@ -62,6 +62,8 @@ def run_reminders():
     cfg = rules.load_config()
     today = datetime.now(KST).date()
     for n in db.list_notices(matched_only=True):
+        if n.get("muted"):  # 알림 끈 공고는 리마인더도 제외
+            continue
         for suffix, msg in rules.due_reminders(n, today, cfg.get("reminders", [7, 1])):
             key = f"{n['id']}:{suffix}"
             if not db.already_sent(key):
@@ -140,6 +142,17 @@ def api_save_settings(payload: dict = Body(...)):
     """대시보드에서 LLM 설정 저장(DB 영속). 비번/키는 빈값이면 기존 유지."""
     cost.save_llm_settings(payload or {})
     return {"saved": True}
+
+
+@app.post("/api/mute")
+def api_mute(payload: dict = Body(...)):
+    """알림 끄기/켜기(관심 없음). 끄면 알림 발송 제외 + 대시보드 접힘."""
+    nid = (payload or {}).get("id")
+    if not nid:
+        return JSONResponse({"error": "no id"}, status_code=400)
+    muted = bool((payload or {}).get("muted", True))
+    db.set_muted(nid, muted)
+    return {"id": nid, "muted": muted}
 
 
 @app.post("/api/enrich")

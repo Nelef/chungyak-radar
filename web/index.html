@@ -37,8 +37,16 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 .tabs button[aria-pressed="true"]{background:var(--ink); color:#fff}
 .tabs button:focus-visible{outline:2px solid var(--navy); outline-offset:2px}
 
-.card{display:flex; gap:14px; background:var(--card); border:1px solid var(--line);
+.card{position:relative; display:flex; gap:14px; background:var(--card); border:1px solid var(--line);
   border-radius:10px; padding:16px; margin-bottom:10px}
+.mutebtn{position:absolute; top:10px; right:10px; z-index:1; font:inherit; font-size:11px;
+  padding:3px 8px; border:1px solid var(--line); border-radius:6px; background:#fff;
+  color:var(--muted); cursor:pointer; white-space:nowrap}
+.mutebtn:hover{border-color:var(--navy); color:var(--navy)}
+.mutebtn.on{border-color:#EAC5BC; color:var(--red); background:#FBF2F0}
+.card.muted{opacity:.62}
+.card.muted .name{padding-right:88px}
+.muted-note{font-size:12px; color:var(--muted); margin-top:4px}
 .dday{flex:0 0 74px; display:flex; flex-direction:column; align-items:center; justify-content:center;
   border-right:1px solid var(--line); padding-right:14px}
 .dday .num{font-size:26px; font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:-.5px; line-height:1.1; white-space:nowrap}
@@ -108,6 +116,21 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 .units{margin-top:6px; padding-top:6px; border-top:1px dashed #C9D6E5}
 .units .urow{font-size:13px; font-variant-numeric:tabular-nums}
 .units .urow b{color:var(--ink)}
+/* 납부 일정 */
+.sched{margin-top:6px; padding-top:6px; border-top:1px dashed #C9D6E5}
+.sched .srow{display:flex; align-items:baseline; gap:8px; font-size:13px;
+  font-variant-numeric:tabular-nums; margin-top:2px}
+.sched .swhen{flex:0 0 76px; color:var(--muted)}
+.sched .slabel{flex:0 0 66px; color:var(--ink)}
+.sched .srow b{color:var(--navy)}
+/* 이전 결과 < > 페이저 */
+.hpager{display:flex; align-items:center; gap:8px; margin-bottom:6px; font-size:12px; color:var(--muted)}
+.hpager button{border:1px solid var(--line); background:#fff; color:var(--navy); cursor:pointer;
+  border-radius:6px; width:22px; height:22px; line-height:1; font-size:14px; padding:0}
+.hpager button:hover:not(:disabled){background:var(--navy); color:#fff}
+.hpager button:disabled{opacity:.35; cursor:default}
+/* 알림 끄기 버튼과 겹치지 않게 이름 여백 */
+.body>.name{padding-right:88px}
 
 .empty{padding:60px 0; text-align:center; color:var(--muted)}
 .empty b{display:block; font-size:16px; color:var(--ink); margin-bottom:6px}
@@ -249,6 +272,18 @@ function esc(s){ return String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&
 
 function card(n){
   const j = judge(n);
+  const nm = n.url ? `<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.name)}</a>` : esc(n.name);
+  const muteBtn = `<button class="mutebtn${n.muted?' on':''}" onclick="toggleMute('${n.id}')" title="${n.muted?'알림 켜기':'알림 끄기(관심 없음 → 접기)'}">${n.muted?'🔔 알림 켜기':'🔕 알림 끄기'}</button>`;
+  // 알림 끈(관심 없는) 공고는 이름만 남기고 접는다.
+  if(n.muted){
+    return `<div class="card muted" data-k="${j.k}" data-nid="${esc(n.id)}">
+      <div class="dday ${j.k}"><span class="lbl">꺼짐</span></div>
+      <div class="body">${muteBtn}
+        <div class="name">${nm}</div>
+        <div class="muted-note">🔕 알림 꺼짐 · 관심 없음으로 접음</div>
+      </div>
+    </div>`;
+  }
   const L = n.llm || {};
   const steps = [];
   const add = (name,a,b) => { const r = fr(a,b); if(r) steps.push(`<span class="step ${stepCls(a,b)}">${name} <b>${r}</b></span>`); };
@@ -259,12 +294,11 @@ function card(n){
   const tcls = t => t.includes('⚠')?'warn' : t.includes('🔥')?'hot' : (t.includes('💰')||t.includes('🏠'))?'cost' : '';
   const tags = (n.tags||[]).map(t=>`<span class="tag ${tcls(t)}">${esc(t)}</span>`).join('');
   const supply = n.total_supply ? ' · '+n.total_supply+'세대' : '';
-  const nm = n.url ? `<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.name)}</a>` : esc(n.name);
   const mq = n.address || n.name || '';
   const mapBtn = mq ? ` · <a class="maplink" href="https://map.kakao.com/link/search/${encodeURIComponent(mq)}" target="_blank" rel="noopener">🗺 지도</a>` : '';
   return `<div class="card" data-k="${j.k}" data-nid="${esc(n.id)}">
     <div class="dday ${j.k}"><span class="num">${j.num==='오늘'?'오늘':j.num}</span><span class="lbl">${j.lbl}</span></div>
-    <div class="body">
+    <div class="body">${muteBtn}
       <div class="name">${nm}</div>
       <div class="meta">${esc(n.region||'')} · ${esc(n.house_kind||'')}${supply}${mapBtn}</div>
       ${steps.length ? `<div class="timeline">${steps.join('')}</div>` : ''}
@@ -282,11 +316,36 @@ function llmSummary(L){
   if(L.kind==='rent') return [L.deposit_manwon?'보증금 '+money(L.deposit_manwon):'', L.monthly_manwon?'월'+L.monthly_manwon:''].filter(Boolean).join(' ')||'임대';
   return '필요현금 '+money(L.equity);
 }
-function histHtml(n){
-  const H = n.llm_history||[];
-  if(H.length <= 1) return '';
-  const prev = H.slice(1).map(x=>`${esc(llmSummary(x.r))} <span class="muted">${esc((x.at||'').slice(5,16))}</span>`).join(' · ');
-  return `<div class="muted" style="margin-top:6px">이전: ${prev}</div>`;
+function whenFmt(w){ w=String(w||'').trim(); const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(w); return m?`${m[1].slice(2)}.${m[2]}.${m[3]}`:w; }
+/* 납부 일정: 언제(회차) · 얼마(최저 분양가×%) · 비율 */
+function scheduleHtml(L){
+  const S = L.schedule||[]; if(!S.length) return '';
+  const rows = S.map(s=>{
+    const amt = (L.price_lo && s.pct) ? ' · <b>'+money(L.price_lo*s.pct/100)+'</b>' : '';
+    const pct = (s.pct!=null && s.pct!=='') ? ` <span class="muted">${s.pct}%</span>` : '';
+    return `<div class="srow"><span class="swhen">${esc(whenFmt(s.when))||'-'}</span><span class="slabel">${esc(s.label||'')}</span>${amt}${pct}</div>`;
+  }).join('');
+  return `<div class="sched"><div class="muted">🗓 납부 일정 <span style="font-weight:400">(분양가 최저 ${money(L.price_lo)} 기준)</span></div>${rows}</div>`;
+}
+/* LLM 결과 1건의 본문(임대/분양) */
+function llmBox(L){
+  if(L.kind==='rent'){
+    const p=[]; if(L.deposit_manwon)p.push('보증금 '+money(L.deposit_manwon));
+    if(L.monthly_manwon)p.push('월 '+L.monthly_manwon+'만'); if(L.area_m2)p.push('전용 '+L.area_m2+'㎡');
+    let inner = `<b>🏠 임대조건</b> ${esc(p.join(' · '))||'-'}`;
+    if(L.apply_start) inner += `<div>신청 ${fr(L.apply_start,L.apply_end)||esc(L.apply_start)}</div>`;
+    if(L.note) inner += `<div class="muted">${esc(L.note)}</div>`;
+    return inner + unitsHtml(L);
+  }
+  const price = L.price_lo===L.price_hi ? money(L.price_lo) : money(L.price_lo)+'~'+money(L.price_hi);
+  const reg = L.hopetown?'신희타 모기지':(L.regulated?'규제':'비규제');
+  const cap = L.cap_hit ? ' 대출 '+money(L.loan)+' 상한' : '';
+  const ar = L.area_lo ? (L.area_lo===L.area_hi ? ` · 전용 ${L.area_lo}㎡` : ` · 전용 ${L.area_lo}~${L.area_hi}㎡`) : '';
+  let inner = `<b>💰 필요현금</b> ${L.highlight?'🔥 ':''}${money(L.equity)} <span class="muted">(${reg} LTV${L.ltv_pct}%${cap})</span>`
+    + `<div class="muted">분양가 ${price}${ar} · 계약 최소현금 ${money(L.entry_cash)}(계약금 ${L.contract_pct}%${L.estimated?' 가정':''})</div>`;
+  inner += scheduleHtml(L);
+  if(L.rank_advice) inner += `<div><b>🤖 순위</b> ${esc(L.rank_advice)}</div>`;
+  return inner + unitsHtml(L);
 }
 function llmHtml(n){
   // LLM 서버가 죽었을 때: 공고를 없애지 않고 배너로 안내(버튼은 '다시 시도'로 유지)
@@ -295,28 +354,28 @@ function llmHtml(n){
     : '';
   if(n._loading && !n.enriched) return errBanner + `<button class="analyze" disabled>분석 중… (LLM)</button>`;
   if(!n.enriched) return errBanner + `<button class="analyze" onclick="enrichNotice('${n.id}')">${n._llmError?'🔁 다시 시도':'🔄 LLM 분석'}</button>`;
-  const L = n.llm;
-  // 재분석 중이면 이전 결과는 그대로 두고 푸터만 '분석 중…'
   const again = n._loading ? `<span class="muted">🔄 분석 중…</span>`
     : `<button class="analyze" onclick="enrichNotice('${n.id}',true)">🔄 다시</button>`;
-  if(!L) return errBanner + `<div class="llm"><span class="muted">분석함 · 정보를 못 찾음</span><div class="llmfoot">${again}</div></div>`;
-  let inner;
-  if(L.kind==='rent'){
-    const p=[]; if(L.deposit_manwon)p.push('보증금 '+money(L.deposit_manwon));
-    if(L.monthly_manwon)p.push('월 '+L.monthly_manwon+'만'); if(L.area_m2)p.push('전용 '+L.area_m2+'㎡');
-    inner = `<b>🏠 임대조건</b> ${esc(p.join(' · '))||'-'}`;
-    if(L.apply_start) inner += `<div>신청 ${fr(L.apply_start,L.apply_end)||esc(L.apply_start)}</div>`;
-    if(L.note) inner += `<div class="muted">${esc(L.note)}</div>`;
-  } else {
-    const price = L.price_lo===L.price_hi ? money(L.price_lo) : money(L.price_lo)+'~'+money(L.price_hi);
-    const reg = L.hopetown?'신희타 모기지':(L.regulated?'규제':'비규제');
-    const cap = L.cap_hit ? ' 대출 '+money(L.loan)+' 상한' : '';
-    const ar = L.area_lo ? (L.area_lo===L.area_hi ? ` · 전용 ${L.area_lo}㎡` : ` · 전용 ${L.area_lo}~${L.area_hi}㎡`) : '';
-    inner = `<b>💰 필요현금</b> ${L.highlight?'🔥 ':''}${money(L.equity)} <span class="muted">(${reg} LTV${L.ltv_pct}%${cap})</span>`
-      + `<div class="muted">분양가 ${price}${ar} · 계약 최소현금 ${money(L.entry_cash)}(계약금 ${L.contract_pct}%${L.estimated?' 가정':''})</div>`;
-    if(L.rank_advice) inner += `<div><b>🤖 순위</b> ${esc(L.rank_advice)}</div>`;
-  }
-  return errBanner + `<div class="llm ${L.highlight?'hot':''}">${inner}${unitsHtml(L)}${histHtml(n)}<div class="llmfoot">${again}</div></div>`;
+  // 결과 목록: 히스토리(최근 3개, 0=최신) 우선. 없으면 현재 결과 1건.
+  const hist = (n.llm_history && n.llm_history.length) ? n.llm_history
+             : (n.llm ? [{at:'', r:n.llm}] : []);
+  if(!hist.length) return errBanner + `<div class="llm"><span class="muted">분석함 · 정보를 못 찾음</span><div class="llmfoot">${again}</div></div>`;
+  const idx = Math.min(Math.max(n._hidx||0, 0), hist.length-1);
+  const entry = hist[idx], L = entry.r;
+  const pager = hist.length>1 ? `<div class="hpager">
+      <button onclick="histNav('${n.id}',1)" ${idx>=hist.length-1?'disabled':''} title="이전 결과">‹</button>
+      <span>${idx+1}/${hist.length}${entry.at?` · ${esc(entry.at.slice(5,16))}`:''}${idx>0?' (이전)':''}</span>
+      <button onclick="histNav('${n.id}',-1)" ${idx<=0?'disabled':''} title="다음(최신) 결과">›</button>
+    </div>` : '';
+  if(!L) return errBanner + `<div class="llm">${pager}<span class="muted">분석함 · 정보를 못 찾음</span><div class="llmfoot">${again}</div></div>`;
+  const hot = (idx===0 && L.highlight) ? ' hot' : '';
+  return errBanner + `<div class="llm${hot}">${pager}${llmBox(L)}<div class="llmfoot">${again}</div></div>`;
+}
+function histNav(id, delta){
+  const n = NOTICES.find(x=>x.id===id); if(!n) return;
+  const len = (n.llm_history && n.llm_history.length) ? n.llm_history.length : 1;
+  n._hidx = Math.min(Math.max((n._hidx||0)+delta, 0), len-1);
+  render();
 }
 function unitsHtml(L){
   const U = L.units||[]; if(!U.length) return '';
@@ -341,11 +400,20 @@ async function enrichNotice(id, force){
     if(res.error){          // LLM 서버 죽음 등: 공고는 그대로 두고 배너만 띄움(재시도 가능)
       n._llmError = res.error;
     }else{
-      n.enriched = true; n.llm = res.llm;
+      n.enriched = true; n.llm = res.llm; n._hidx = 0;  // 새 분석 → 최신 결과로
       if(res.llm_history) n.llm_history = res.llm_history;
     }
   }catch(e){ n._llmError = 'network'; }  // 우리 서버조차 응답 없음
   n._loading = false; render();
+}
+async function toggleMute(id){
+  const n = NOTICES.find(x=>x.id===id); if(!n) return;
+  const next = !n.muted;
+  n.muted = next; render();                 // 낙관적 갱신(즉시 접기/펼치기)
+  try{
+    await fetch('/api/mute',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id, muted: next})});
+  }catch(e){ n.muted = !next; render(); }    // 실패 시 롤백
 }
 
 /* 값 필터용: 공고의 최대 전용면적(평형별 units → 분양 area_hi → 임대 대표 area_m2) */

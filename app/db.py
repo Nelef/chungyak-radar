@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS meta (
     k TEXT PRIMARY KEY,
     v TEXT
 );
+CREATE TABLE IF NOT EXISTS muted_notices (
+    notice_id TEXT PRIMARY KEY,          -- 알림 끈 공고(관심 없음) → 대시보드 접힘 + 발송 제외
+    at        TEXT NOT NULL
+);
 """
 
 
@@ -108,13 +112,17 @@ def list_notices(matched_only: bool = True):
     if matched_only:
         q += " WHERE matched = 1"
     q += " ORDER BY COALESCE(r1_start, sp_start, notice_date) DESC"
-    llm, hist = {}, {}
+    llm, hist, muted = {}, {}, set()
     with conn() as c:
         rows = [dict(r) for r in c.execute(q).fetchall()]
         try:  # LLM 분석결과·히스토리(cost_cache) 병합
             for cr in c.execute("SELECT notice_id, result, ok, history FROM cost_cache").fetchall():
                 llm[cr["notice_id"]] = json.loads(cr["result"]) if (cr["ok"] and cr["result"]) else None
                 hist[cr["notice_id"]] = json.loads(cr["history"]) if cr["history"] else []
+        except sqlite3.OperationalError:
+            pass
+        try:  # 알림 끈 공고
+            muted = {x["notice_id"] for x in c.execute("SELECT notice_id FROM muted_notices").fetchall()}
         except sqlite3.OperationalError:
             pass
     for r in rows:
@@ -124,6 +132,7 @@ def list_notices(matched_only: bool = True):
         r["enriched"] = r["id"] in llm           # LLM 분석 실행 여부
         r["llm"] = llm.get(r["id"])              # 결과 dict / None(실패) / 없음
         r["llm_history"] = hist.get(r["id"], []) # 최근 3개 결과
+        r["muted"] = r["id"] in muted            # 알림 끔(관심 없음)
     return rows
 
 
@@ -209,3 +218,17 @@ def get_meta(k: str):
     with conn() as c:
         row = c.execute("SELECT v FROM meta WHERE k = ?", (k,)).fetchone()
         return row["v"] if row else None
+
+
+def set_muted(nid: str, muted: bool):
+    """알림 끄기/켜기. 끄면 신규·리마인더 알림 발송에서 제외되고 대시보드가 접는다."""
+    with conn() as c:
+        if muted:
+            c.execute("INSERT OR IGNORE INTO muted_notices (notice_id, at) VALUES (?, ?)", (nid, now_kst()))
+        else:
+            c.execute("DELETE FROM muted_notices WHERE notice_id = ?", (nid,))
+
+
+def is_muted(nid: str) -> bool:
+    with conn() as c:
+        return c.execute("SELECT 1 FROM muted_notices WHERE notice_id = ?", (nid,)).fetchone() is not None

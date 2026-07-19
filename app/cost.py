@@ -707,6 +707,8 @@ SALE_SCHEMA = {
         "contract_pct": {"type": "NUMBER"}, "interim_total_pct": {"type": "NUMBER"},
         "interim_self_pay_pct": {"type": "NUMBER"}, "balance_pct": {"type": "NUMBER"},
         "interest_deferred": {"type": "BOOLEAN"},
+        "schedule": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+            "label": {"type": "STRING"}, "when": {"type": "STRING"}, "pct": {"type": "NUMBER"}}}},
         "rank_advice": {"type": "STRING"}, "note": {"type": "STRING"},
     },
     "required": ["contract_pct", "interim_total_pct", "interim_self_pay_pct", "balance_pct"],
@@ -733,7 +735,12 @@ def _sale_prompt(profile, remndr=False):
         "아래 아파트 입주자모집공고문에서 JSON 객체 하나만 출력하라. 설명·마크다운 없이 JSON만. "
         "키: contract_pct(계약금 %), interim_total_pct(중도금 총 %), "
         "interim_self_pay_pct(중도금 중 대출불가로 현금 자납해야 하는 % — 전액 대출 가능하면 0), "
-        f"balance_pct(잔금 %), interest_deferred(중도금 이자후불제면 true), {rank}, note(특이사항 한 줄)."
+        "balance_pct(잔금 %), interest_deferred(중도금 이자후불제면 true), "
+        "schedule(납부 일정 배열 — 계약금·중도금 각 회차·잔금을 납부 순서대로. 각 원소는 "
+        '{"label":"계약금"|"중도금 1차"|…|"잔금", '
+        '"when":공고문의 납부일 "YYYY-MM-DD"(절대일자가 있으면) 또는 "계약일"·"계약후 6개월" 등 공고문 표기 그대로, '
+        '"pct":분양가 대비 납부 비율 숫자}. 공고문에 납부일정표가 없으면 빈 배열 []), '
+        f"{rank}, note(특이사항 한 줄)."
     )
 
 
@@ -814,6 +821,8 @@ def _build(notice, regulated, ccfg, profile=None, remndr=False):
             "supply_general": sup, "supply_special": sp,
             "supply_total": ((sup or 0) + (sp or 0)) or None,
         })
+    sched = terms.get("schedule")
+    sched = [s for s in sched if isinstance(s, dict)] if isinstance(sched, list) else []
     return {
         "kind": "sale", "units": units,
         "price_lo": lo, "price_hi": hi, "area_lo": area_lo, "area_hi": area_hi,
@@ -822,6 +831,7 @@ def _build(notice, regulated, ccfg, profile=None, remndr=False):
         "loan": loan, "equity": equity, "ltv_pct": ltv, "cap_hit": cap_hit,
         "regulated": bool(regulated), "hopetown": hopetown, "remndr": bool(remndr),
         "highlight": bool(hl and equity < hl), "estimated": estimated,
+        "schedule": sched,   # 납부 일정(회차·시기·%) — 프런트에서 최저 분양가로 금액 환산
         "rank_advice": terms.get("rank_advice", ""), "note": terms.get("note", ""),
     }
 
