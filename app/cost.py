@@ -281,27 +281,40 @@ def _parse_json(text):
     return json.loads(m.group(0)) if m else None
 
 
-def _openai_terms(pdf_bytes, s, prompt=None, keywords=None):
-    """OpenAI 호환 챗 API(gemma4 등)로 조건 추출. PDF는 텍스트로 변환해 전송."""
-    text = _pdf_text(pdf_bytes, keywords=keywords)
-    if not text:
-        return None
+def _openai_headers(s):
+    """OpenAI 호환 요청 공통 헤더/바디 조각.
+    temperature를 명시하면(예: Kimi Code — 1만 허용) 그 값을 쓰고 vLLM 전용
+    chat_template_kwargs는 생략한다(외부 엔드포인트가 모르는 파라미터라 거절될 수 있음)."""
     headers = {"Content-Type": "application/json"}
     if s.get("user"):
         headers["Authorization"] = "Basic " + base64.b64encode(
             f"{s['user']}:{s.get('pass', '')}".encode()).decode()
     elif s.get("api_key"):
         headers["Authorization"] = "Bearer " + s["api_key"]
+    return headers
+
+
+def _openai_body(s, messages, max_tokens):
     body = {
         "model": s.get("model") or "gemma-4-26b",
-        "messages": [{"role": "user", "content": (prompt or OPENAI_PROMPT) + "\n\n---공고문---\n" + text}],
-        "max_tokens": 2500, "temperature": 0,
-        # gemma4 등 reasoning 모델의 사고를 꺼서 JSON을 바로 출력하게(사고가 토큰을 잡아먹지 않게)
-        "chat_template_kwargs": {"enable_thinking": False},
+        "messages": messages, "max_tokens": max_tokens,
+        "temperature": float(s["temperature"]) if s.get("temperature") else 0,
     }
+    if not s.get("temperature"):
+        # gemma4 등 로컬 vLLM: 사고를 꺼서 JSON을 바로 출력하게(사고가 토큰을 잡아먹지 않게)
+        body["chat_template_kwargs"] = {"enable_thinking": False}
+    return body
+
+
+def _openai_terms(pdf_bytes, s, prompt=None, keywords=None):
+    """OpenAI 호환 챗 API(Kimi·gemma4 등)로 조건 추출. PDF는 텍스트로 변환해 전송."""
+    text = _pdf_text(pdf_bytes, keywords=keywords)
+    if not text:
+        return None
+    body = _openai_body(s, [{"role": "user", "content": (prompt or OPENAI_PROMPT) + "\n\n---공고문---\n" + text}], 8000)
     url = s["base_url"].rstrip("/") + "/v1/chat/completions"
     try:
-        r = requests.post(url, json=body, headers=headers, timeout=180)
+        r = requests.post(url, json=body, headers=_openai_headers(s), timeout=180)
         r.raise_for_status()
     except requests.exceptions.RequestException as e:
         raise LLMDownError(str(e)) from e
@@ -309,7 +322,7 @@ def _openai_terms(pdf_bytes, s, prompt=None, keywords=None):
 
 
 # ------------------------------------------------------ LLM 설정 (DB 영속·웹 편집)
-_LLM_FIELDS = ("provider", "base_url", "model", "user", "pass", "api_key")
+_LLM_FIELDS = ("provider", "base_url", "model", "user", "pass", "api_key", "temperature")
 
 
 def llm_settings():
@@ -324,7 +337,7 @@ def llm_settings():
 
 def save_llm_settings(d):
     """대시보드에서 넘어온 설정 저장. 비번/키는 빈값이면 기존 유지."""
-    for k in ("provider", "base_url", "model", "user"):
+    for k in ("provider", "base_url", "model", "user", "temperature"):
         if d.get(k) is not None:
             db.set_meta("llm_" + k, str(d[k]).strip())
     for k in ("pass", "api_key"):
@@ -346,17 +359,10 @@ def _llm_json(prompt, s):
     """PDF 없이 텍스트 프롬프트만으로 LLM JSON 응답(예: 메타데이터 순위조언)."""
     prov = (s.get("provider") or "").lower()
     if prov in ("openai", "custom", "vllm"):
-        headers = {"Content-Type": "application/json"}
-        if s.get("user"):
-            headers["Authorization"] = "Basic " + base64.b64encode(
-                f"{s['user']}:{s.get('pass', '')}".encode()).decode()
-        elif s.get("api_key"):
-            headers["Authorization"] = "Bearer " + s["api_key"]
-        body = {"model": s.get("model") or "gemma-4-26b", "temperature": 0, "max_tokens": 600,
-                "chat_template_kwargs": {"enable_thinking": False},
-                "messages": [{"role": "user", "content": prompt}]}
+        body = _openai_body(s, [{"role": "user", "content": prompt}], 2000)
         try:
-            r = requests.post(s["base_url"].rstrip("/") + "/v1/chat/completions", json=body, headers=headers, timeout=120)
+            r = requests.post(s["base_url"].rstrip("/") + "/v1/chat/completions",
+                              json=body, headers=_openai_headers(s), timeout=120)
             r.raise_for_status()
         except requests.exceptions.RequestException as e:
             raise LLMDownError(str(e)) from e

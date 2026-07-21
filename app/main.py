@@ -134,6 +134,7 @@ def api_get_settings():
     return {
         "provider": s["provider"], "base_url": s["base_url"], "model": s["model"],
         "user": s["user"], "pass_set": bool(s["pass"]), "api_key_set": bool(s["api_key"]),
+        "temperature": s["temperature"],
     }
 
 

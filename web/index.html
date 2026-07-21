@@ -164,13 +164,14 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
     <h3>공고문 분석 LLM (분양가/필요현금 계산)</h3>
     <label>제공자</label>
     <select id="setProvider">
-      <option value="openai">직접 서버 (OpenAI 호환 · gemma4 등)</option>
+      <option value="openai">직접 서버 (OpenAI 호환 · Kimi·gemma4 등)</option>
       <option value="gemini">Google Gemini</option>
       <option value="">사용 안 함 (계약금 가정치만)</option>
     </select>
     <div class="row">
-      <div><label>URL (base)</label><input id="setBaseUrl" placeholder="https://xxxx.trycloudflare.com"></div>
-      <div><label>모델</label><input id="setModel" placeholder="gemma-4-26b"></div>
+      <div><label>URL (base)</label><input id="setBaseUrl" placeholder="https://api.kimi.com/coding"></div>
+      <div><label>모델</label><input id="setModel" placeholder="kimi-for-coding-highspeed"></div>
+      <div><label>temperature</label><input id="setTemp" placeholder="비우면 0 · kimi는 1 필수"></div>
     </div>
     <div class="row">
       <div><label>ID (Basic Auth)</label><input id="setUser" placeholder="demo"></div>
@@ -578,6 +579,7 @@ async function loadSettings(){
   $('#setProvider').value = s.provider || '';
   $('#setBaseUrl').value = s.base_url || '';
   $('#setModel').value = s.model || '';
+  $('#setTemp').value = s.temperature || '';
   $('#setUser').value = s.user || '';
   $('#setPass').placeholder = s.pass_set ? '(저장됨 · 변경 시만 입력)' : '';
   $('#setApiKey').placeholder = s.api_key_set ? '(저장됨 · 변경 시만 입력)' : '';
@@ -594,6 +596,7 @@ $('#setSave').addEventListener('click', async ()=>{
     body: JSON.stringify({
       provider: $('#setProvider').value, base_url: $('#setBaseUrl').value.trim(),
       model: $('#setModel').value.trim(), user: $('#setUser').value.trim(),
+      temperature: $('#setTemp').value.trim(),
       pass: $('#setPass').value, api_key: $('#setApiKey').value,
     })});
   $('#setPass').value = ''; $('#setApiKey').value = '';
