@@ -256,6 +256,10 @@ def _openai_body(s, messages, max_tokens):
     if not s.get("temperature"):
         # gemma4 등 로컬 vLLM: 사고를 꺼서 JSON을 바로 출력하게(사고가 토큰을 잡아먹지 않게)
         body["chat_template_kwargs"] = {"enable_thinking": False}
+    else:
+        # Kimi k3: reasoning effort를 낮춰 응답 시간을 시놀로지 프록시 60s 제한 안으로
+        # (실측: high 37s → low 18s, 공고문 추출 품질은 유지)
+        body["reasoning_effort"] = "low"
     return body
 
 
