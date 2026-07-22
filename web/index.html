@@ -165,19 +165,18 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
     <label>제공자</label>
     <select id="setProvider">
       <option value="openai">직접 서버 (OpenAI 호환 · Kimi·gemma4 등)</option>
-      <option value="gemini">Google Gemini</option>
       <option value="">사용 안 함 (계약금 가정치만)</option>
     </select>
     <div class="row">
       <div><label>URL (base)</label><input id="setBaseUrl" placeholder="https://api.kimi.com/coding"></div>
-      <div><label>모델</label><input id="setModel" placeholder="kimi-for-coding-highspeed"></div>
+      <div><label>모델</label><input id="setModel" placeholder="k3"></div>
       <div><label>temperature</label><input id="setTemp" placeholder="비우면 0 · kimi는 1 필수"></div>
     </div>
     <div class="row">
       <div><label>ID (Basic Auth)</label><input id="setUser" placeholder="demo"></div>
       <div><label>비밀번호</label><input id="setPass" type="password" placeholder=""></div>
     </div>
-    <div id="apiKeyWrap" hidden><label>Gemini API 키</label><input id="setApiKey" type="password" placeholder=""></div>
+    <div id="apiKeyWrap"><label>API 키 (Bearer)</label><input id="setApiKey" type="password" placeholder=""></div>
     <button class="save" id="setSave" type="button">저장</button>
     <span id="setStatus" class="hint"></span>
     <div class="hint">cloudflared quick tunnel은 URL·비번이 재시작마다 바뀝니다. 바뀌면 여기서 갱신하세요.<br>설정은 DB(/data)에 저장되어 이미지·소스 업데이트에도 유지됩니다.</div>
@@ -570,10 +569,6 @@ $('#refreshBtn').addEventListener('click', async ()=>{
 });
 
 /* LLM 설정 패널 */
-function toggleProviderFields(){
-  const gem = $('#setProvider').value === 'gemini';
-  $('#apiKeyWrap').hidden = !gem;
-}
 async function loadSettings(){
   const s = await (await fetch('/api/settings')).json();
   $('#setProvider').value = s.provider || '';
@@ -583,9 +578,7 @@ async function loadSettings(){
   $('#setUser').value = s.user || '';
   $('#setPass').placeholder = s.pass_set ? '(저장됨 · 변경 시만 입력)' : '';
   $('#setApiKey').placeholder = s.api_key_set ? '(저장됨 · 변경 시만 입력)' : '';
-  toggleProviderFields();
 }
-$('#setProvider').addEventListener('change', toggleProviderFields);
 $('#settingsBtn').addEventListener('click', ()=>{
   const el = $('#settingsPanel'); el.hidden = !el.hidden;
   if(!el.hidden) loadSettings();

@@ -6,10 +6,10 @@ homedubu.com 방식(시점별 자금계획)을 따른다:
 
 데이터 출처:
   - 분양가: 청약홈 주택형별 API(getAPTLttotPblancMdl) LTTOT_TOP_AMOUNT(만원)
-  - 계약금율·중도금 자납비율·잔금율: 공고문 PDF를 Gemini가 추출(무료 티어)
+  - 계약금율·중도금 자납비율·잔금율: 공고문 PDF를 LLM(Kimi)이 추출
   - LTV: 규제지역 여부(rules가 태깅) → config의 규제/비규제 값
 
-GEMINI_API_KEY가 없으면 공고문 추출을 건너뛰고 계약금 가정치(config)로 폴백한다.
+LLM 미설정이면 공고문 추출을 건너뛰고 계약금 가정치(config)로 폴백한다.
 공고문이 PDF가 아니면(HWP 등) 조용히 건너뛴다. 결과는 공고ID별 DB 캐시.
 """
 import base64
@@ -37,7 +37,6 @@ REMNDR_DETAIL = "https://www.applyhome.co.kr/ai/aia/selectAPTRemndrLttotPblancDe
 LH_LIST = "https://apply.lh.or.kr/lhapply/apply/wt/wrtanc/selectWrtancList.do"
 LH_INFO = "https://apply.lh.or.kr/lhapply/apply/wt/wrtanc/selectWrtancInfo.do"
 LH_FILE = "https://apply.lh.or.kr/lhapply/lhFile.do"
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 HEADERS = {"User-Agent": "Mozilla/5.0 (chungyak-radar; personal use)"}
 
 DEFAULTS = {
@@ -49,7 +48,6 @@ DEFAULTS = {
     "hopetown_loan_cap_manwon": 40000,  # 신희타 모기지 정액 한도(4억)
     "min_area_m2": 49,             # 전용 이 면적 이상 주택형만 계산(전부 소형이면 전체)
     "highlight_under_manwon": 20000,    # 필요현금이 이 값 미만이면 🔥 강조(2억)
-    "gemini_model": "gemini-flash-latest",
     "fallback_contract_pct": 10,   # 공고문 추출 실패 시 계약금 가정 %
 }
 
@@ -62,26 +60,6 @@ CREATE TABLE IF NOT EXISTS cost_cache (
     history    TEXT           -- 최근 성공 결과 3개 [{at,r}]
 );
 """
-
-GEMINI_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {
-        "contract_pct": {"type": "NUMBER"},
-        "interim_total_pct": {"type": "NUMBER"},
-        "interim_self_pay_pct": {"type": "NUMBER"},
-        "balance_pct": {"type": "NUMBER"},
-        "interest_deferred": {"type": "BOOLEAN"},
-        "note": {"type": "STRING"},
-    },
-    "required": ["contract_pct", "interim_total_pct", "interim_self_pay_pct", "balance_pct"],
-}
-GEMINI_PROMPT = (
-    "이 아파트 입주자모집공고문에서 자금 조건을 추출해 JSON으로만 답하라. "
-    "키: contract_pct(계약금 비율 %), interim_total_pct(중도금 총 비율 %), "
-    "interim_self_pay_pct(중도금 중 대출불가로 현금 자납해야 하는 비율 %, 전액 대출 가능하면 0), "
-    "balance_pct(잔금 비율 %), interest_deferred(중도금 이자후불제면 true), note(옵션/특이사항 한 줄)."
-)
-
 
 def init():
     with db.conn() as c:
@@ -159,7 +137,7 @@ def _pdf_from_detail_html(html):
             continue
         data = fr.content
         if data[:4] != b"%PDF":
-            continue  # HWP 등은 Gemini가 못 읽으므로 건너뜀
+            continue  # HWP 등 비PDF 첨부는 제외
         if "공고문" in requests.utils.unquote(fr.headers.get("Content-Disposition", "")):
             return data
         best = best or data
@@ -218,31 +196,6 @@ def _fetch_lh_pdf(notice):
     return fr.content if fr.content[:4] == b"%PDF" else None
 
 
-# ---------------------------------------------------------------- Gemini
-def _gemini_terms(pdf_bytes, model, api_key, prompt=None, schema=None):
-    body = {
-        "contents": [{"parts": [
-            {"inline_data": {"mime_type": "application/pdf",
-                             "data": base64.b64encode(pdf_bytes).decode()}},
-            {"text": prompt or GEMINI_PROMPT},
-        ]}],
-        "generationConfig": {
-            "temperature": 0, "maxOutputTokens": 800,
-            "thinkingConfig": {"thinkingBudget": 0},  # 사고토큰이 출력을 잡아먹지 않게
-            "responseMimeType": "application/json",
-            "responseSchema": schema or GEMINI_SCHEMA,
-        },
-    }
-    try:
-        r = requests.post(GEMINI_URL.format(model=model), json=body,
-                          headers={"x-goog-api-key": api_key}, timeout=150)
-        r.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        raise LLMDownError(str(e)) from e
-    text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(text)
-
-
 # -------------------------------------------- OpenAI 호환 LLM (gemma4 등, 텍스트)
 OPENAI_PROMPT = (
     "아래 아파트 입주자모집공고문 텍스트에서 자금 조건을 추출해 JSON 객체 하나만 출력하라. "
@@ -296,7 +249,7 @@ def _openai_headers(s):
 
 def _openai_body(s, messages, max_tokens):
     body = {
-        "model": s.get("model") or "gemma-4-26b",
+        "model": s.get("model") or "k3",
         "messages": messages, "max_tokens": max_tokens,
         "temperature": float(s["temperature"]) if s.get("temperature") else 0,
     }
@@ -326,12 +279,8 @@ _LLM_FIELDS = ("provider", "base_url", "model", "user", "pass", "api_key", "temp
 
 
 def llm_settings():
-    """DB(meta)에 저장된 LLM 설정. 없으면 env(GEMINI_API_KEY)로 폴백."""
+    """DB(meta)에 저장된 LLM 설정. provider가 비어 있으면 LLM 미사용."""
     s = {k: (db.get_meta("llm_" + k) or "").strip() for k in _LLM_FIELDS}
-    if not s["api_key"]:
-        s["api_key"] = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not s["provider"] and s["api_key"]:
-        s["provider"] = "gemini"
     return s
 
 
@@ -346,10 +295,8 @@ def save_llm_settings(d):
             db.set_meta("llm_" + k, v)
 
 
-def _llm_terms(pdf_bytes, s, prompt=None, schema=None, keywords=None):
+def _llm_terms(pdf_bytes, s, prompt=None, keywords=None):
     prov = (s.get("provider") or "").lower()
-    if prov == "gemini":
-        return _gemini_terms(pdf_bytes, s.get("model") or "gemini-flash-latest", s["api_key"], prompt, schema)
     if prov in ("openai", "custom", "vllm"):
         return _openai_terms(pdf_bytes, s, prompt, keywords)
     return None
@@ -367,18 +314,6 @@ def _llm_json(prompt, s):
         except requests.exceptions.RequestException as e:
             raise LLMDownError(str(e)) from e
         return _parse_json(r.json()["choices"][0]["message"]["content"])
-    if prov == "gemini":
-        body = {"contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0, "maxOutputTokens": 600,
-                                     "thinkingConfig": {"thinkingBudget": 0},
-                                     "responseMimeType": "application/json"}}
-        try:
-            r = requests.post(GEMINI_URL.format(model=s.get("model") or "gemini-flash-latest"),
-                              json=body, headers={"x-goog-api-key": s["api_key"]}, timeout=120)
-            r.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            raise LLMDownError(str(e)) from e
-        return _parse_json(r.json()["candidates"][0]["content"]["parts"][0]["text"])
     return None
 
 
@@ -402,18 +337,6 @@ def _meta_rank_prompt(notice, price_lo_manwon, profile, remndr=False):
 # ------------------------------------------------ 임대(청년안심) 공고문 추출
 SOCO_FILE = "https://soco.seoul.go.kr/coHouse/cmmn/file/fileDown.do?atchFileId={aid}&fileSn=1"
 RENT_KEYWORDS = ("신청", "접수", "청약", "보증금", "임대료", "임대조건", "모집", "일정")
-RENT_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {
-        "apply_start": {"type": "STRING"}, "apply_end": {"type": "STRING"},
-        "deposit_manwon": {"type": "NUMBER"}, "monthly_manwon": {"type": "NUMBER"},
-        "area_m2": {"type": "NUMBER"},
-        "move_in": {"type": "STRING"}, "lease_term": {"type": "STRING"},
-        "contract_pct": {"type": "NUMBER"}, "rank_advice": {"type": "STRING"},
-        "note": {"type": "STRING"},
-    },
-    "required": ["apply_start", "apply_end"],
-}
 
 
 def _rent_prompt(profile=None):
@@ -440,7 +363,7 @@ def _rent_llm_merge(t, pdf, profile):
     if not (s.get("provider") and pdf):
         return
     try:
-        lt = _llm_terms(pdf, s, _rent_prompt(profile), RENT_SCHEMA, RENT_KEYWORDS) or {}
+        lt = _llm_terms(pdf, s, _rent_prompt(profile), RENT_KEYWORDS) or {}
     except LLMDownError:
         raise
     except Exception as e:  # noqa: BLE001
@@ -522,7 +445,7 @@ def _build_rent(notice, min_area=0, profile=None):
     s = llm_settings()
     t = {}
     if s.get("provider"):  # 신청기간·입주·거주기간·계약금·자격조언은 LLM으로
-        t = _llm_terms(pdf, s, _rent_prompt(profile), RENT_SCHEMA, RENT_KEYWORDS) or {}
+        t = _llm_terms(pdf, s, _rent_prompt(profile), RENT_KEYWORDS) or {}
     try:  # 보증금/월세/전용은 pdfplumber 표 파싱으로 덮어씀(결정론적·정확)
         price = _rent_price(pdf)
         if price:
@@ -717,18 +640,6 @@ def _rent_units(pdf_bytes, min_area):
 
 SALE_KEYWORDS = ("계약금", "중도금", "잔금", "납부", "공급금액", "대출", "융자",
                  "소득", "자격", "특별공급", "공급대상", "순위", "신혼", "생애최초")
-SALE_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {
-        "contract_pct": {"type": "NUMBER"}, "interim_total_pct": {"type": "NUMBER"},
-        "interim_self_pay_pct": {"type": "NUMBER"}, "balance_pct": {"type": "NUMBER"},
-        "interest_deferred": {"type": "BOOLEAN"},
-        "schedule": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
-            "label": {"type": "STRING"}, "when": {"type": "STRING"}, "pct": {"type": "NUMBER"}}}},
-        "rank_advice": {"type": "STRING"}, "note": {"type": "STRING"},
-    },
-    "required": ["contract_pct", "interim_total_pct", "interim_self_pay_pct", "balance_pct"],
-}
 
 
 def _who(profile):
@@ -791,7 +702,7 @@ def _build(notice, regulated, ccfg, profile=None, remndr=False):
             if not pdf and not remndr:  # 청약홈에 첨부 없는 LH 공고(신혼희망타운 등)는 LH 사이트에서
                 pdf = _fetch_lh_pdf(notice)
             if pdf:
-                terms = _llm_terms(pdf, s, _sale_prompt(profile, remndr), SALE_SCHEMA, SALE_KEYWORDS)
+                terms = _llm_terms(pdf, s, _sale_prompt(profile, remndr), SALE_KEYWORDS)
         except LLMDownError:  # 서버 죽음은 삼키지 말고 위로 전달 → 대시보드가 '서버 죽음' 안내
             raise
         except Exception as e:  # noqa: BLE001
