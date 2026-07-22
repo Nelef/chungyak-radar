@@ -2,8 +2,11 @@
 
 실행: uvicorn app.main:app --host 0.0.0.0 --port 8000
 """
+import json
 import logging
 import os
+import queue
+import threading
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 
@@ -17,7 +20,7 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import Body, FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app import commute, cost, db, notify, rules, sources
 
@@ -158,13 +161,48 @@ def api_mute(payload: dict = Body(...)):
 
 @app.post("/api/enrich")
 def api_enrich(payload: dict = Body(...)):
-    """공고 1건 온디맨드 LLM 분석 (분양=필요현금+순위조언 / 임대=신청기간+임대료)."""
+    """공고 1건 온디맨드 LLM 분석 (분양=필요현금+순위조언 / 임대=신청기간+임대료).
+    stream=true면 SSE로 진행 상황·LLM 사고/출력을 실시간 중계한다."""
     nid = (payload or {}).get("id")
     n = db.get_notice(nid) if nid else None
     if not n:
         return JSONResponse({"error": "not found"}, status_code=404)
+    if (payload or {}).get("stream"):
+        return _enrich_sse(n, bool((payload or {}).get("force")))
     result = cost.enrich(n, rules.load_config(), bool((payload or {}).get("force")))
     if isinstance(result, dict) and result.get("error"):
         # LLM 서버 죽음 등: 분석 완료로 표시하지 않음(공고 유지 + 재시도 가능)
         return {"enriched": False, "llm": None, "error": result["error"]}
     return {"enriched": True, "llm": result, "llm_history": cost.cache_history(nid)}
+
+
+def _enrich_sse(notice, force):
+    """분석을 스레드로 돌리고 진행 이벤트를 SSE로 흘려보낸다.
+    델타가 계속 흐르뮼로 프록시 60s 아이들 타임아웃도 우회된다."""
+    q = queue.Queue()
+
+    def work():
+        try:
+            result = cost.enrich(notice, rules.load_config(), force,
+                                 on_event=lambda ev: q.put(ev))
+            if isinstance(result, dict) and result.get("error"):
+                q.put({"error": result["error"]})
+            else:
+                q.put({"done": bool(result), "llm": result,
+                       "llm_history": cost.cache_history(notice["id"])})
+        except Exception as e:  # noqa: BLE001
+            q.put({"error": str(e)[:200]})
+        finally:
+            q.put(None)  # 스트림 종료 신호
+
+    threading.Thread(target=work, daemon=True).start()
+
+    def gen():
+        while True:
+            ev = q.get()
+            if ev is None:
+                break
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

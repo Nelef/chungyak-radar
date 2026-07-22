@@ -263,13 +263,58 @@ def _openai_body(s, messages, max_tokens):
     return body
 
 
-def _openai_terms(pdf_bytes, s, prompt=None, keywords=None):
-    """OpenAI 호환 챗 API(Kimi·gemma4 등)로 조건 추출. PDF는 텍스트로 변환해 전송."""
+def _emit(on_event, **ev):
+    """진행 이벤트를 호출자 콜백으로 전달(대시보드 SSE 실시간 표시용)."""
+    if on_event:
+        try:
+            on_event(ev)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _openai_stream(url, body, headers, on_event):
+    """stream=True로 호출해 사고(reasoning_content)/출력 델타를 on_event로 흘리며
+    최종 content를 모아 반환한다. SSE라 프록시 60s 제한도 델타가 흘러 우회된다."""
+    body = {**body, "stream": True}
+    parts = []
+    try:
+        with requests.post(url, json=body, headers=headers, stream=True, timeout=280) as r:
+            r.raise_for_status()
+            for line in r.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except ValueError:
+                    continue
+                delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
+                think = delta.get("reasoning_content")
+                if think:
+                    _emit(on_event, thinking=think)
+                text = delta.get("content")
+                if text:
+                    parts.append(text)
+                    _emit(on_event, content=text)
+    except requests.exceptions.RequestException as e:
+        raise LLMDownError(str(e)) from e
+    return "".join(parts)
+
+
+def _openai_terms(pdf_bytes, s, prompt=None, keywords=None, on_event=None):
+    """OpenAI 호환 챗 API(Kimi·gemma4 등)로 조건 추출. PDF는 텍스트로 변환해 전송.
+    on_event가 있으면 진행 상황/사고/출력을 실시간으로 흘려보낸다(SSE 스트리밍)."""
+    _emit(on_event, phase="📄 PDF 텍스트 추출 중…")
     text = _pdf_text(pdf_bytes, keywords=keywords)
     if not text:
         return None
     body = _openai_body(s, [{"role": "user", "content": (prompt or OPENAI_PROMPT) + "\n\n---공고문---\n" + text}], 8000)
     url = s["base_url"].rstrip("/") + "/v1/chat/completions"
+    if on_event:
+        _emit(on_event, phase="🤖 LLM 분석 중…")
+        return _parse_json(_openai_stream(url, body, _openai_headers(s), on_event))
     try:
         r = requests.post(url, json=body, headers=_openai_headers(s), timeout=180)
         r.raise_for_status()
@@ -299,21 +344,24 @@ def save_llm_settings(d):
             db.set_meta("llm_" + k, v)
 
 
-def _llm_terms(pdf_bytes, s, prompt=None, keywords=None):
+def _llm_terms(pdf_bytes, s, prompt=None, keywords=None, on_event=None):
     prov = (s.get("provider") or "").lower()
     if prov in ("openai", "custom", "vllm"):
-        return _openai_terms(pdf_bytes, s, prompt, keywords)
+        return _openai_terms(pdf_bytes, s, prompt, keywords, on_event)
     return None
 
 
-def _llm_json(prompt, s):
+def _llm_json(prompt, s, on_event=None):
     """PDF 없이 텍스트 프롬프트만으로 LLM JSON 응답(예: 메타데이터 순위조언)."""
     prov = (s.get("provider") or "").lower()
     if prov in ("openai", "custom", "vllm"):
         body = _openai_body(s, [{"role": "user", "content": prompt}], 2000)
+        url = s["base_url"].rstrip("/") + "/v1/chat/completions"
+        if on_event:
+            _emit(on_event, phase="🤖 순위 조언 생성 중…")
+            return _parse_json(_openai_stream(url, body, _openai_headers(s), on_event))
         try:
-            r = requests.post(s["base_url"].rstrip("/") + "/v1/chat/completions",
-                              json=body, headers=_openai_headers(s), timeout=120)
+            r = requests.post(url, json=body, headers=_openai_headers(s), timeout=120)
             r.raise_for_status()
         except requests.exceptions.RequestException as e:
             raise LLMDownError(str(e)) from e
@@ -360,14 +408,14 @@ def _rent_prompt(profile=None):
     )
 
 
-def _rent_llm_merge(t, pdf, profile):
+def _rent_llm_merge(t, pdf, profile, on_event=None):
     """임대: 신청기간·입주가능일·거주기간·계약금율·자격조언 같은 정성 필드를 LLM으로 채운다.
     보증금/월세/전용은 pdfplumber 표 파싱이 우선이라 이미 있으면 덮지 않는다(not t.get)."""
     s = llm_settings()
     if not (s.get("provider") and pdf):
         return
     try:
-        lt = _llm_terms(pdf, s, _rent_prompt(profile), RENT_KEYWORDS) or {}
+        lt = _llm_terms(pdf, s, _rent_prompt(profile), RENT_KEYWORDS, on_event) or {}
     except LLMDownError:
         raise
     except Exception as e:  # noqa: BLE001
@@ -437,10 +485,11 @@ def _rent_price(pdf_bytes):
     return {"deposit_manwon": best[0], "monthly_manwon": best[1], "area_m2": best[2]}
 
 
-def _build_rent(notice, min_area=0, profile=None):
+def _build_rent(notice, min_area=0, profile=None, on_event=None):
     aid = (notice.get("raw") or {}).get("atchFileId")
     if not aid:
         return None
+    _emit(on_event, phase="📄 공고문 다운로드 중…")
     fr = requests.get(SOCO_FILE.format(aid=aid), headers=HEADERS, timeout=60)
     fr.raise_for_status()
     if fr.content[:4] != b"%PDF":
@@ -449,7 +498,7 @@ def _build_rent(notice, min_area=0, profile=None):
     s = llm_settings()
     t = {}
     if s.get("provider"):  # 신청기간·입주·거주기간·계약금·자격조언은 LLM으로
-        t = _llm_terms(pdf, s, _rent_prompt(profile), RENT_KEYWORDS) or {}
+        t = _llm_terms(pdf, s, _rent_prompt(profile), RENT_KEYWORDS, on_event) or {}
     try:  # 보증금/월세/전용은 pdfplumber 표 파싱으로 덮어씀(결정론적·정확)
         price = _rent_price(pdf)
         if price:
@@ -504,10 +553,11 @@ def _fetch_lh_rent_pdf(notice):
     return _fetch_lh_pdf(n)
 
 
-def _build_public_rent(notice, min_area=0, profile=None):
+def _build_public_rent(notice, min_area=0, profile=None, on_event=None):
     """LH임대·GH 공고 — 접수기간은 목록에 있고, 공고문 PDF에서 보증금/월세/평형을 뽑는다."""
     t = {"kind": "rent", "apply_start": notice.get("r1_start"), "apply_end": notice.get("r1_end")}
     src = notice.get("source")
+    _emit(on_event, phase="📄 공고문 다운로드 중…")
     try:
         pdf = _fetch_gh_pdf(notice) if src == "gh" else _fetch_lh_rent_pdf(notice)
     except Exception as e:  # noqa: BLE001
@@ -522,7 +572,7 @@ def _build_public_rent(notice, min_area=0, profile=None):
                 t["units"] = _rent_units(pdf, min_area)
         except Exception as e:  # noqa: BLE001
             log.warning("임대료 표 파싱 실패(%s): %s", notice.get("name"), e)
-        _rent_llm_merge(t, pdf, profile)  # 입주·거주기간·계약금·자격조언 + 표 실패 시 보증금 폴백
+        _rent_llm_merge(t, pdf, profile, on_event)  # 입주·거주기간·계약금·자격조언 + 표 실패 시 보증금 폴백
     if not t.get("area_m2"):  # GH 상세의 전용면적 범위(예: '26.9294 ~ 51.9289') 최저값
         m = re.search(r"(\d+(?:\.\d+)?)", (notice.get("raw") or {}).get("area_text") or "")
         if m:
@@ -530,10 +580,11 @@ def _build_public_rent(notice, min_area=0, profile=None):
     return t
 
 
-def _build_applyhome_rent(notice, min_area=0, profile=None):
+def _build_applyhome_rent(notice, min_area=0, profile=None, on_event=None):
     """공공지원 민간임대(청약홈) — 접수기간은 API에 이미 있으니 공고문 PDF로 보증금/월세만 뽑는다."""
     url = notice.get("url")
     t = {"kind": "rent", "apply_start": notice.get("r1_start"), "apply_end": notice.get("r1_end")}
+    _emit(on_event, phase="📄 공고문 다운로드 중…")
     pdf = _fetch_gonggo_pdf_url(url) if url else None
     if pdf:
         try:  # 표 파싱(결정론적) 우선
@@ -544,7 +595,7 @@ def _build_applyhome_rent(notice, min_area=0, profile=None):
                 t["units"] = _rent_units(pdf, min_area)
         except Exception as e:  # noqa: BLE001
             log.warning("임대료 표 파싱 실패(%s): %s", notice.get("name"), e)
-        _rent_llm_merge(t, pdf, profile)  # 입주·거주기간·계약금·자격조언 + 표 실패 시 보증금 폴백
+        _rent_llm_merge(t, pdf, profile, on_event)  # 입주·거주기간·계약금·자격조언 + 표 실패 시 보증금 폴백
     return t
 
 
@@ -675,7 +726,7 @@ def _sale_prompt(profile, remndr=False):
     )
 
 
-def _build(notice, regulated, ccfg, profile=None, remndr=False):
+def _build(notice, regulated, ccfg, profile=None, remndr=False, on_event=None):
     ah_key = os.environ.get("APPLYHOME_API_KEY", "").strip()
     if not ah_key:
         return None
@@ -683,6 +734,7 @@ def _build(notice, regulated, ccfg, profile=None, remndr=False):
     hmn = raw.get("HOUSE_MANAGE_NO") or notice["id"].split(":")[-1]
     pbn = raw.get("PBLANC_NO") or hmn
 
+    _emit(on_event, phase="💰 분양가 조회 중…")
     all_prices = _fetch_prices(hmn, ah_key, REMNDR_MDL if remndr else APPLYHOME_MDL)
     if not all_prices:
         return None
@@ -702,11 +754,12 @@ def _build(notice, regulated, ccfg, profile=None, remndr=False):
     s = llm_settings()
     if s.get("provider"):
         try:
+            _emit(on_event, phase="📄 공고문 PDF 다운로드 중…")
             pdf = _fetch_gonggo_pdf(hmn, pbn, REMNDR_DETAIL if remndr else DETAIL_URL)
             if not pdf and not remndr:  # 청약홈에 첨부 없는 LH 공고(신혼희망타운 등)는 LH 사이트에서
                 pdf = _fetch_lh_pdf(notice)
             if pdf:
-                terms = _llm_terms(pdf, s, _sale_prompt(profile, remndr), SALE_KEYWORDS)
+                terms = _llm_terms(pdf, s, _sale_prompt(profile, remndr), SALE_KEYWORDS, on_event)
         except LLMDownError:  # 서버 죽음은 삼키지 말고 위로 전달 → 대시보드가 '서버 죽음' 안내
             raise
         except Exception as e:  # noqa: BLE001
@@ -716,7 +769,7 @@ def _build(notice, regulated, ccfg, profile=None, remndr=False):
         estimated = True
         if s.get("provider"):
             try:
-                rank = _llm_json(_meta_rank_prompt(notice, lo, profile, remndr), s)
+                rank = _llm_json(_meta_rank_prompt(notice, lo, profile, remndr), s, on_event)
                 if rank and rank.get("rank_advice"):
                     terms["rank_advice"] = rank["rank_advice"]
             except LLMDownError:
@@ -767,9 +820,10 @@ def _build(notice, regulated, ccfg, profile=None, remndr=False):
     }
 
 
-def enrich(notice, cfg, force=False):
+def enrich(notice, cfg, force=False, on_event=None):
     """공고 1건 온디맨드 LLM 분석(캐시). 분양=필요현금+순위조언 / 임대=신청기간+임대료.
-    force=True면 캐시 무시하고 다시 분석. 반환: 통합 dict(kind 포함) 또는 None."""
+    force=True면 캐시 무시하고 다시 분석. 반환: 통합 dict(kind 포함) 또는 None.
+    on_event가 있으면 진행 상황·LLM 사고/출력 델타를 실시간으로 전달한다(SSE)."""
     ccfg = {**DEFAULTS, **((cfg or {}).get("cost") or {})}
     if not ccfg.get("enabled"):
         return None
@@ -786,15 +840,15 @@ def enrich(notice, cfg, force=False):
             flags = notice.get("flags") or {}
             regulated = bool(flags.get("투기과열") or flags.get("조정대상"))
             result = _build(notice, regulated, ccfg, (cfg or {}).get("profile"),
-                            remndr=(src == "applyhome_remndr"))
+                            remndr=(src == "applyhome_remndr"), on_event=on_event)
         else:
             profile = (cfg or {}).get("profile")
             if src == "board":
-                result = _build_rent(notice, min_area, profile)
+                result = _build_rent(notice, min_area, profile, on_event)
             elif src == "applyhome_rent":
-                result = _build_applyhome_rent(notice, min_area, profile)
+                result = _build_applyhome_rent(notice, min_area, profile, on_event)
             elif src in ("lh_rent", "gh"):
-                result = _build_public_rent(notice, min_area, profile)
+                result = _build_public_rent(notice, min_area, profile, on_event)
     except LLMDownError as e:  # 서버 죽음: 실패로 캐시하지 말고(=재시도 가능) 명시적 오류 반환
         log.warning("%s LLM 서버 응답 없음: %s", notice.get("name"), e)
         return {"error": "llm_down", "detail": str(e)[:200]}

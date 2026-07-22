@@ -109,6 +109,14 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 .llm.hot{background:#FFF7E6; border-color:#E7C766}
 .llm.err{background:#FDECEC; border-color:#E7A0A0; color:#8A1C1C}
 .llm.err b{color:#8A1C1C}
+.llm.stream .stphase{font-size:12px; color:var(--navy); font-weight:600}
+.llm.stream details{margin-top:6px}
+.llm.stream summary{cursor:pointer; font-size:12px; color:var(--muted)}
+.llm.stream pre{white-space:pre-wrap; word-break:break-all; font-size:12px; line-height:1.5;
+  max-height:150px; overflow:auto; margin:6px 0 0; padding:8px; background:#fff;
+  border:1px solid #DCE6F2; border-radius:6px}
+.llm.stream pre:empty{display:none}
+.llm.stream .thinkbody{color:var(--muted); font-style:italic}
 .card.focus{outline:3px solid var(--navy); outline-offset:2px;
   animation:focusPulse 1.2s ease-out 2}
 @keyframes focusPulse{0%{box-shadow:0 0 0 0 rgba(0,32,96,.35)} 100%{box-shadow:0 0 0 14px rgba(0,32,96,0)}}
@@ -357,12 +365,20 @@ function llmBox(L){
   if(L.rank_advice) inner += `<div><b>🤖 순위</b> ${esc(L.rank_advice)}</div>`;
   return inner + unitsHtml(L);
 }
+/* 분석 중 실시간 패널 — SSE 이벤트가 id(stphase/stthink/stout + 공고id)로 직접 갱신 */
+function streamHtml(n){
+  return `<div class="llm stream">
+    <div class="stphase" id="stphase${n.id}">연결 중…</div>
+    <details open><summary>💭 생각 과정 (실시간)</summary><pre class="thinkbody" id="stthink${n.id}"></pre></details>
+    <pre id="stout${n.id}"></pre>
+  </div>`;
+}
 function llmHtml(n){
   // LLM 서버가 죽었을 때: 공고를 없애지 않고 배너로 안내(버튼은 '다시 시도'로 유지)
   const errBanner = n._llmError
-    ? `<div class="llm err">⚠️ <b>LLM 서버 응답 없음</b> — 분석하지 못했습니다. 서버(gemma4 등) 상태를 확인한 뒤 다시 시도하세요.</div>`
+    ? `<div class="llm err">⚠️ <b>LLM 서버 응답 없음</b> — 분석하지 못했습니다. 서버(Kimi) 상태를 확인한 뒤 다시 시도하세요.</div>`
     : '';
-  if(n._loading && !n.enriched) return errBanner + `<button class="analyze" disabled>분석 중… (LLM)</button>`;
+  if(n._loading) return errBanner + streamHtml(n);  // SSE 실시간 패널(단계·생각·출력)
   if(!n.enriched) return errBanner + `<button class="analyze" onclick="enrichNotice('${n.id}')">${n._llmError?'🔁 다시 시도':'🔄 LLM 분석'}</button>`;
   const again = n._loading ? `<span class="muted">🔄 분석 중…</span>`
     : `<button class="analyze" onclick="enrichNotice('${n.id}',true)">🔄 다시</button>`;
@@ -405,13 +421,33 @@ function unitsHtml(L){
 async function enrichNotice(id, force){
   const n = NOTICES.find(x=>x.id===id); if(!n) return;
   n._loading = true; n._llmError = null; render();
+  const el = k => document.getElementById(k + id);
+  const append = (e, t) => { if(e){ e.textContent += t; e.scrollTop = e.scrollHeight; } };
   try{
-    const res = await (await fetch('/api/enrich',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id, force: !!force})})).json();
-    if(res.error){          // LLM 서버 죽음 등: 공고는 그대로 두고 배너만 띄움(재시도 가능)
-      n._llmError = res.error;
-    }else{
-      n.enriched = true; n.llm = res.llm; n._hidx = 0;  // 새 분석 → 최신 결과로
-      if(res.llm_history) n.llm_history = res.llm_history;
+    const res = await fetch('/api/enrich',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id, force: !!force, stream: true})});
+    if(!res.ok || !res.body) throw new Error('bad response');
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    for(;;){                                   // SSE 수동 파싱(POST라 EventSource 불가)
+      const {value, done} = await reader.read();
+      if(done) break;
+      buf += dec.decode(value, {stream:true});
+      let i;
+      while((i = buf.indexOf('\n\n')) >= 0){
+        const raw = buf.slice(0, i); buf = buf.slice(i+2);
+        const line = raw.split('\n').find(l => l.startsWith('data:'));
+        if(!line) continue;
+        let ev; try{ ev = JSON.parse(line.slice(5)); }catch{ continue; }
+        if(ev.phase){ const e = el('stphase'); if(e) e.textContent = ev.phase; }
+        else if(ev.thinking) append(el('stthink'), ev.thinking);
+        else if(ev.content) append(el('stout'), ev.content);
+        else if(ev.error){ n._llmError = ev.error; }
+        else if('done' in ev){
+          n.enriched = true; n.llm = ev.llm || null; n._hidx = 0;  // 새 분석 → 최신 결과로
+          if(ev.llm_history) n.llm_history = ev.llm_history;
+        }
+      }
     }
   }catch(e){ n._llmError = 'network'; }  // 우리 서버조차 응답 없음
   n._loading = false; render();
