@@ -389,7 +389,19 @@ def _meta_rank_prompt(notice, price_lo_manwon, profile, remndr=False):
 
 # ------------------------------------------------ 임대(청년안심) 공고문 추출
 SOCO_FILE = "https://soco.seoul.go.kr/coHouse/cmmn/file/fileDown.do?atchFileId={aid}&fileSn=1"
-RENT_KEYWORDS = ("신청", "접수", "청약", "보증금", "임대료", "임대조건", "모집", "일정")
+RENT_KEYWORDS = ("신청", "접수", "청약", "보증금", "임대료", "임대조건", "모집", "일정",
+                 "소득", "자격", "순위", "거주")
+
+
+# 2025년 도시근로자 가구원수별 가구당 월평균소득(원/월) — 공고문에 기준표가 없을 때의 표준 판정표.
+# 서울주거포털(seoulhousing.kr)·청년안심 공고문 교차검증(2026-07). 갱신은 config.yaml income_standard_2025.
+INCOME_STANDARD_TEXT = (
+    "표준 소득기준(2025년 도시근로자 월평균소득, 원/월): "
+    "1인 100% 3,813,363 / 110% 4,194,699 / 120% 4,576,036, "
+    "2인 100% 5,866,270 / 110% 6,452,897 / 120% 7,039,524, "
+    "3인 100% 8,168,429 / 120% 9,802,115. "
+    "공고문에 소득기준표가 없으면 이 표준표로 판정하라."
+)
 
 
 def _rent_prompt(profile=None):
@@ -403,8 +415,12 @@ def _rent_prompt(profile=None):
         "move_in(입주 가능일/입주예정일 YYYY-MM-DD, 없으면 공고문 표기 그대로, 없으면 ''), "
         "lease_term(임대(거주) 계약기간 문자열, 예 '2년'·'최장 6년', 없으면 ''), "
         "contract_pct(계약금 비율 % — 보증금 대비, 공고문에 명시 없으면 10), "
-        f"rank_advice(신청자 상황: {_who(profile)}. 이 임대 공고에서 신청 가능한 공급유형(특별/우선/일반)과 "
-        "소득·자산 기준 충족 여부를 한국어 2~3문장으로 조언), "
+        "income_limit(공고문의 소득기준을 한 줄 요약 — 예 '1인 100% 381만/110% 419만/120% 458만'. "
+        "공고문에 소득기준이 아예 없으면 '기준 없음(표준 100/110/120% 적용)'이라고 표기), "
+        "residency_req(거주지·지역 순위 기준 한 줄 — 예 '영등포구 1순위, 서울 2순위, 그 외 3순위'. 없으면 ''), "
+        f"rank_advice(신청자 상황: {_who(profile)}. {INCOME_STANDARD_TEXT} "
+        "신청자의 실제 월소득과 비교해 청년 1인 가구 각자 기준·신혼부부 2인 합산 기준으로 "
+        "신청 가능한 순위(1/2/3순위) 또는 불가를 구체 숫자와 함께 한국어 2~3문장으로 판정), "
         "note(특이사항 한 줄). 보증금과 월임대료를 혼동하지 말 것."
     )
 
@@ -423,7 +439,8 @@ def _rent_llm_merge(t, pdf, profile, on_event=None):
         log.warning("임대 LLM 보강 실패: %s", e)
         return
     for k in ("apply_start", "apply_end", "deposit_manwon", "monthly_manwon", "area_m2",
-              "move_in", "lease_term", "contract_pct", "rank_advice", "note"):
+              "move_in", "lease_term", "contract_pct", "income_limit", "residency_req",
+              "rank_advice", "note"):
         if lt.get(k) and not t.get(k):
             t[k] = lt[k]
 
@@ -701,7 +718,14 @@ SALE_KEYWORDS = ("계약금", "중도금", "잔금", "납부", "공급금액", "
 def _who(profile):
     who = (profile or {}).get("household") or "무주택 세대"
     inc = (profile or {}).get("annual_income_manwon")
-    return who + (f", 부부합산 연소득 약 {inc}만원" if inc else "")
+    s = who + (f", 부부합산 연소득 약 {inc}만원" if inc else "")
+    iw = (profile or {}).get("income_2025_won") or {}
+    if iw.get("me"):
+        me = iw["me"]
+        sp = iw.get("spouse") or 0
+        s += (f". 2025년 소득: 본인 {me:,}원(월 {me/12/10000:.0f}만), "
+              f"배우자 {sp:,}원(월 {sp/12/10000:.0f}만), 합산 월 {(me+sp)/12/10000:.0f}만")
+    return s
 
 
 def _sale_prompt(profile, remndr=False):

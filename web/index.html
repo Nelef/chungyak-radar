@@ -117,9 +117,10 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
   border:1px solid #DCE6F2; border-radius:6px}
 .llm.stream pre:empty{display:none}
 .llm.stream .thinkbody{color:var(--muted); font-style:italic}
-.memo{margin-top:4px; font-size:12.5px; background:#FFF9E3; border:1px dashed #E7C766;
+.memo{display:inline-block; margin-top:4px; font-size:12.5px; background:#FFF9E3; border:1px dashed #E7C766;
   border-radius:6px; padding:4px 8px; cursor:text}
-.memo.empty{color:var(--muted); background:transparent; border:1px dotted #C9D6E5}
+.memo.empty{color:var(--muted); background:transparent; border:1px dotted #C9D6E5;
+  font-size:11px; padding:1px 6px; opacity:.75}
 .memoedit{margin-top:4px; width:100%; box-sizing:border-box; font-size:12.5px; padding:4px 8px;
   border:1px solid var(--navy); border-radius:6px}
 .qa{margin-top:8px; border-top:1px dashed #C9D6E5; padding-top:6px}
@@ -374,6 +375,8 @@ function llmBox(L){
       inner += `<div><b>💵 계약 시 필요현금</b> ${money(down)} `
         + `<span class="muted">(계약금 ${cp}%) · 입주 시 잔금 ${money(L.deposit_manwon-down)}</span></div>`;
     }
+    if(L.income_limit) inner += `<div><b>📊 소득기준</b> ${esc(L.income_limit)}</div>`;
+    if(L.residency_req) inner += `<div><b>📍 거주지</b> ${esc(L.residency_req)}</div>`;
     if(L.rank_advice) inner += `<div><b>🤖 자격</b> ${esc(L.rank_advice)}</div>`;
     if(L.note) inner += `<div class="muted">${esc(L.note)}</div>`;
     return inner + unitsHtml(L);

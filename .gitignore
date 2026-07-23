@@ -21,3 +21,6 @@ __pycache__/
 Thumbs.db
 .vscode/
 .idea/
+
+# 로컬 가상환경
+.venv/
