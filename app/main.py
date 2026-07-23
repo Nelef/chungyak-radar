@@ -169,6 +169,17 @@ def api_memo(payload: dict = Body(...)):
     return {"id": nid, "memo": (payload or {}).get("text") or ""}
 
 
+@app.post("/api/collapse")
+def api_collapse(payload: dict = Body(...)):
+    """접기/펼치기. 알림은 계속 오고 대시보드만 1줄로 표시."""
+    nid = (payload or {}).get("id")
+    if not nid:
+        return JSONResponse({"error": "no id"}, status_code=400)
+    collapsed = bool((payload or {}).get("collapsed", True))
+    db.set_collapsed(nid, collapsed)
+    return {"id": nid, "collapsed": collapsed}
+
+
 @app.post("/api/ask")
 def api_ask(payload: dict = Body(...)):
     """분석된 공고에 추가질문. stream=true면 SSE로 사고/답변을 실시간 중계."""

@@ -39,13 +39,16 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 
 .card{position:relative; display:flex; gap:14px; background:var(--card); border:1px solid var(--line);
   border-radius:10px; padding:16px; margin-bottom:10px}
-.mutebtn{position:absolute; top:10px; right:10px; z-index:1; font:inherit; font-size:11px;
-  padding:3px 8px; border:1px solid var(--line); border-radius:6px; background:#fff;
-  color:var(--muted); cursor:pointer; white-space:nowrap}
-.mutebtn:hover{border-color:var(--navy); color:var(--navy)}
+.cardbtns{position:absolute; top:10px; right:10px; z-index:1; display:flex; gap:4px}
+.cardbtns button{font:inherit; font-size:12px; padding:2px 7px; border:1px solid var(--line);
+  border-radius:6px; background:#fff; color:var(--muted); cursor:pointer; white-space:nowrap}
+.cardbtns button:hover{border-color:var(--navy); color:var(--navy)}
 .mutebtn.on{border-color:#EAC5BC; color:var(--red); background:#FBF2F0}
-.card.muted{opacity:.62}
-.card.muted .name{padding-right:88px}
+.card.muted{opacity:.42; padding:10px 16px}
+.card.muted .body>.name{white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:44px}
+.card.collapsed{padding:10px 16px}
+.card.collapsed .name{white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.memoic{cursor:help}
 .muted-note{font-size:12px; color:var(--muted); margin-top:4px}
 .dday{flex:0 0 74px; display:flex; flex-direction:column; align-items:center; justify-content:center;
   border-right:1px solid var(--line); padding-right:14px}
@@ -156,7 +159,7 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 .hpager button:hover:not(:disabled){background:var(--navy); color:#fff}
 .hpager button:disabled{opacity:.35; cursor:default}
 /* 알림 끄기 버튼과 겹치지 않게 이름 여백 */
-.body>.name{padding-right:88px}
+.body>.name{padding-right:110px}
 
 .empty{padding:60px 0; text-align:center; color:var(--muted)}
 .empty b{display:block; font-size:16px; color:var(--ink); margin-bottom:6px}
@@ -305,14 +308,24 @@ function card(n){
         onkeydown="if(event.key==='Enter')saveMemo('${n.id}', this.value)"
         onblur="saveMemo('${n.id}', this.value)">`
     : `<div class="memo${n.memo?'':' empty'}" onclick="editMemo('${n.id}')" title="클릭해서 메모 편집">📝 ${n.memo?esc(n.memo):'메모 추가…'}</div>`;
-  const muteBtn = `<button class="mutebtn${n.muted?' on':''}" onclick="toggleMute('${n.id}')" title="${n.muted?'알림 켜기':'알림 끄기(관심 없음 → 접기)'}">${n.muted?'🔔 알림 켜기':'🔕 알림 끄기'}</button>`;
-  // 알림 끈(관심 없는) 공고는 이름만 남기고 접는다.
+  const muteBtn = `<button class="mutebtn${n.muted?' on':''}" onclick="toggleMute('${n.id}')" title="${n.muted?'알림 켜기':'알림 끄기(관심 없음 → 1줄+흐리게)'}">${n.muted?'🔔':'🔕'}</button>`;
+  const foldBtn = `<button class="foldbtn" onclick="toggleCollapse('${n.id}')" title="${n.collapsed?'펼치기':'접기(알림은 계속 옴)'}">${n.collapsed?'▾':'▸'}</button>`;
+  const btns = `<div class="cardbtns">${n.muted?'':foldBtn}${muteBtn}</div>`;
+  // 알림 끈(관심 없는) 공고는 엄격히 1줄 + 흐리게. 메모는 📝 아이콘(툴팁)만.
   if(n.muted){
+    const memoIc = n.memo ? ` <span class="memoic" title="${esc(n.memo)}">📝</span>` : '';
     return `<div class="card muted" data-k="${j.k}" data-nid="${esc(n.id)}">
-      <div class="dday ${j.k}"><span class="lbl">꺼짐</span></div>
-      <div class="body">${muteBtn}
+      <div class="body">${btns}
+        <div class="name">${nm}${memoIc}</div>
+      </div>
+    </div>`;
+  }
+  // 접기(신설) — 알림은 계속 옴. 이름 1줄 + 메모는 전체 표시(여러 줄 허용).
+  if(n.collapsed){
+    return `<div class="card collapsed" data-k="${j.k}" data-nid="${esc(n.id)}">
+      <div class="dday ${j.k}"><span class="num">${j.num==='오늘'?'오늘':j.num}</span><span class="lbl">${j.lbl}</span></div>
+      <div class="body">${btns}
         <div class="name">${nm}</div>${memo}
-        <div class="muted-note">🔕 알림 꺼짐 · 관심 없음으로 접음</div>
       </div>
     </div>`;
   }
@@ -330,7 +343,7 @@ function card(n){
   const mapBtn = mq ? ` · <a class="maplink" href="https://map.kakao.com/link/search/${encodeURIComponent(mq)}" target="_blank" rel="noopener">🗺 지도</a>` : '';
   return `<div class="card" data-k="${j.k}" data-nid="${esc(n.id)}">
     <div class="dday ${j.k}"><span class="num">${j.num==='오늘'?'오늘':j.num}</span><span class="lbl">${j.lbl}</span></div>
-    <div class="body">${muteBtn}
+    <div class="body">${btns}
       <div class="name">${nm}</div>${memo}
       <div class="meta">${esc(n.region||'')} · ${esc(n.house_kind||'')}${supply}${mapBtn}</div>
       ${steps.length ? `<div class="timeline">${steps.join('')}</div>` : ''}
@@ -556,6 +569,15 @@ async function toggleMute(id){
     await fetch('/api/mute',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({id, muted: next})});
   }catch(e){ n.muted = !next; render(); }    // 실패 시 롤백
+}
+async function toggleCollapse(id){
+  const n = NOTICES.find(x=>x.id===id); if(!n) return;
+  const next = !n.collapsed;
+  n.collapsed = next; render();              // 낙관적 갱신(즉시 1줄/펼침)
+  try{
+    await fetch('/api/collapse',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id, collapsed: next})});
+  }catch(e){ n.collapsed = !next; render(); }  // 실패 시 롤백
 }
 
 /* 값 필터용: 공고의 최대 전용면적(평형별 units → 분양 area_hi → 임대 대표 area_m2) */

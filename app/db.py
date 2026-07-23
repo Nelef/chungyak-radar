@@ -59,6 +59,10 @@ CREATE TABLE IF NOT EXISTS pdf_texts (
     text      TEXT NOT NULL,
     at        TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS collapsed_notices (
+    notice_id TEXT PRIMARY KEY,          -- 접기(알림은 계속 발송, 대시보드만 1줄 표시)
+    at        TEXT NOT NULL
+);
 """
 
 
@@ -131,6 +135,7 @@ def list_notices(matched_only: bool = True):
     q += " ORDER BY COALESCE(r1_start, sp_start, notice_date) DESC"
     llm, hist, muted = {}, {}, set()
     memos, qa = {}, {}
+    collapsed = set()
     with conn() as c:
         rows = [dict(r) for r in c.execute(q).fetchall()]
         try:  # LLM 분석결과·히스토리(cost_cache) 병합
@@ -141,6 +146,10 @@ def list_notices(matched_only: bool = True):
             pass
         try:  # 알림 끈 공고
             muted = {x["notice_id"] for x in c.execute("SELECT notice_id FROM muted_notices").fetchall()}
+        except sqlite3.OperationalError:
+            pass
+        try:  # 접은 공고(알림은 계속 발송)
+            collapsed = {x["notice_id"] for x in c.execute("SELECT notice_id FROM collapsed_notices").fetchall()}
         except sqlite3.OperationalError:
             pass
         try:  # 공고별 메모
@@ -160,6 +169,7 @@ def list_notices(matched_only: bool = True):
         r["llm"] = llm.get(r["id"])              # 결과 dict / None(실패) / 없음
         r["llm_history"] = hist.get(r["id"], []) # 최근 3개 결과
         r["muted"] = r["id"] in muted            # 알림 끔(관심 없음)
+        r["collapsed"] = r["id"] in collapsed    # 접기(알림은 계속 발송)
         r["memo"] = memos.get(r["id"], "")       # 사용자 메모
         r["qa"] = qa.get(r["id"], [])            # 추가질문 기록
     return rows
@@ -256,6 +266,15 @@ def set_muted(nid: str, muted: bool):
             c.execute("INSERT OR IGNORE INTO muted_notices (notice_id, at) VALUES (?, ?)", (nid, now_kst()))
         else:
             c.execute("DELETE FROM muted_notices WHERE notice_id = ?", (nid,))
+
+
+def set_collapsed(nid: str, collapsed: bool):
+    """접기/펼치기. 알림 발송에는 영향 없고 대시보드만 1줄로 표시."""
+    with conn() as c:
+        if collapsed:
+            c.execute("INSERT OR IGNORE INTO collapsed_notices (notice_id, at) VALUES (?, ?)", (nid, now_kst()))
+        else:
+            c.execute("DELETE FROM collapsed_notices WHERE notice_id = ?", (nid,))
 
 
 def set_memo(nid: str, text: str):
