@@ -159,6 +159,64 @@ def api_mute(payload: dict = Body(...)):
     return {"id": nid, "muted": muted}
 
 
+@app.post("/api/memo")
+def api_memo(payload: dict = Body(...)):
+    """공고 메모 저장(빈 문자열이면 삭제)."""
+    nid = (payload or {}).get("id")
+    if not nid:
+        return JSONResponse({"error": "no id"}, status_code=400)
+    db.set_memo(nid, (payload or {}).get("text") or "")
+    return {"id": nid, "memo": (payload or {}).get("text") or ""}
+
+
+@app.post("/api/ask")
+def api_ask(payload: dict = Body(...)):
+    """분석된 공고에 추가질문. stream=true면 SSE로 사고/답변을 실시간 중계."""
+    nid = (payload or {}).get("id")
+    question = ((payload or {}).get("question") or "").strip()
+    n = db.get_notice(nid) if nid else None
+    if not n:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not question:
+        return JSONResponse({"error": "no question"}, status_code=400)
+    if (payload or {}).get("stream"):
+        return _ask_sse(n, question)
+    try:
+        answer = cost.ask(n, question, rules.load_config())
+    except cost.LLMDownError as e:
+        return {"answer": None, "error": "llm_down", "detail": str(e)[:200]}
+    return {"answer": answer, "qa": db.list_qa(nid)}
+
+
+def _ask_sse(notice, question):
+    """추가질문을 스레드로 돌리고 진행 이벤트를 SSE로 흘려병낸다."""
+    q = queue.Queue()
+
+    def work():
+        try:
+            answer = cost.ask(notice, question, rules.load_config(),
+                              on_event=lambda ev: q.put(ev))
+            q.put({"done": bool(answer), "answer": answer, "qa": db.list_qa(notice["id"])})
+        except cost.LLMDownError as e:
+            q.put({"error": "llm_down", "detail": str(e)[:200]})
+        except Exception as e:  # noqa: BLE001
+            q.put({"error": str(e)[:200]})
+        finally:
+            q.put(None)
+
+    threading.Thread(target=work, daemon=True).start()
+
+    def gen():
+        while True:
+            ev = q.get()
+            if ev is None:
+                break
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.post("/api/enrich")
 def api_enrich(payload: dict = Body(...)):
     """공고 1건 온디맨드 LLM 분석 (분양=필요현금+순위조언 / 임대=신청기간+임대료).

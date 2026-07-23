@@ -117,6 +117,23 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
   border:1px solid #DCE6F2; border-radius:6px}
 .llm.stream pre:empty{display:none}
 .llm.stream .thinkbody{color:var(--muted); font-style:italic}
+.memo{margin-top:4px; font-size:12.5px; background:#FFF9E3; border:1px dashed #E7C766;
+  border-radius:6px; padding:4px 8px; cursor:text}
+.memo.empty{color:var(--muted); background:transparent; border:1px dotted #C9D6E5}
+.memoedit{margin-top:4px; width:100%; box-sizing:border-box; font-size:12.5px; padding:4px 8px;
+  border:1px solid var(--navy); border-radius:6px}
+.qa{margin-top:8px; border-top:1px dashed #C9D6E5; padding-top:6px}
+.qa .qaq{font-size:12.5px; font-weight:600; color:var(--navy); margin-top:6px}
+.qa .qaa{font-size:12.5px; white-space:pre-wrap; word-break:break-all}
+.qa .askbox{display:flex; gap:6px; margin-top:8px}
+.qa .askbox input{flex:1; font-size:12.5px; padding:5px 8px; border:1px solid #C9D6E5; border-radius:6px}
+.qa .askbox .analyze{margin-top:0}
+.qa .askstream .stphase{font-size:12px; color:var(--navy); font-weight:600; margin-top:6px}
+.qa .askstream summary{cursor:pointer; font-size:12px; color:var(--muted)}
+.qa .askstream pre{white-space:pre-wrap; word-break:break-all; font-size:12px; line-height:1.5;
+  max-height:150px; overflow:auto; margin:6px 0 0; padding:8px; background:#fff;
+  border:1px solid #DCE6F2; border-radius:6px}
+.qa .askstream pre:empty{display:none}
 .card.focus{outline:3px solid var(--navy); outline-offset:2px;
   animation:focusPulse 1.2s ease-out 2}
 @keyframes focusPulse{0%{box-shadow:0 0 0 0 rgba(0,32,96,.35)} 100%{box-shadow:0 0 0 14px rgba(0,32,96,0)}}
@@ -281,13 +298,19 @@ function esc(s){ return String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&
 function card(n){
   const j = judge(n);
   const nm = n.url ? `<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.name)}</a>` : esc(n.name);
+  // 메모 — 타이틀 아래 항상 표시. 클릭하면 인라인 편집.
+  const memo = n._editMemo
+    ? `<input class="memoedit" id="memoedit${n.id}" value="${esc(n.memo||'')}" placeholder="메모 입력 후 Enter"
+        onkeydown="if(event.key==='Enter')saveMemo('${n.id}', this.value)"
+        onblur="saveMemo('${n.id}', this.value)">`
+    : `<div class="memo${n.memo?'':' empty'}" onclick="editMemo('${n.id}')" title="클릭해서 메모 편집">📝 ${n.memo?esc(n.memo):'메모 추가…'}</div>`;
   const muteBtn = `<button class="mutebtn${n.muted?' on':''}" onclick="toggleMute('${n.id}')" title="${n.muted?'알림 켜기':'알림 끄기(관심 없음 → 접기)'}">${n.muted?'🔔 알림 켜기':'🔕 알림 끄기'}</button>`;
   // 알림 끈(관심 없는) 공고는 이름만 남기고 접는다.
   if(n.muted){
     return `<div class="card muted" data-k="${j.k}" data-nid="${esc(n.id)}">
       <div class="dday ${j.k}"><span class="lbl">꺼짐</span></div>
       <div class="body">${muteBtn}
-        <div class="name">${nm}</div>
+        <div class="name">${nm}</div>${memo}
         <div class="muted-note">🔕 알림 꺼짐 · 관심 없음으로 접음</div>
       </div>
     </div>`;
@@ -307,7 +330,7 @@ function card(n){
   return `<div class="card" data-k="${j.k}" data-nid="${esc(n.id)}">
     <div class="dday ${j.k}"><span class="num">${j.num==='오늘'?'오늘':j.num}</span><span class="lbl">${j.lbl}</span></div>
     <div class="body">${muteBtn}
-      <div class="name">${nm}</div>
+      <div class="name">${nm}</div>${memo}
       <div class="meta">${esc(n.region||'')} · ${esc(n.house_kind||'')}${supply}${mapBtn}</div>
       ${steps.length ? `<div class="timeline">${steps.join('')}</div>` : ''}
       ${tags ? `<div class="tags">${tags}</div>` : ''}
@@ -385,7 +408,7 @@ function llmHtml(n){
   // 결과 목록: 히스토리(최근 3개, 0=최신) 우선. 없으면 현재 결과 1건.
   const hist = (n.llm_history && n.llm_history.length) ? n.llm_history
              : (n.llm ? [{at:'', r:n.llm}] : []);
-  if(!hist.length) return errBanner + `<div class="llm"><span class="muted">분석함 · 정보를 못 찾음</span><div class="llmfoot">${again}</div></div>`;
+  if(!hist.length) return errBanner + `<div class="llm"><span class="muted">분석함 · 정보를 못 찾음</span><div class="llmfoot">${again}</div></div>${qaHtml(n)}`;
   const idx = Math.min(Math.max(n._hidx||0, 0), hist.length-1);
   const entry = hist[idx], L = entry.r;
   const pager = hist.length>1 ? `<div class="hpager">
@@ -393,9 +416,9 @@ function llmHtml(n){
       <span>${idx+1}/${hist.length}${entry.at?` · ${esc(entry.at.slice(5,16))}`:''}${idx>0?' (이전)':''}</span>
       <button onclick="histNav('${n.id}',-1)" ${idx<=0?'disabled':''} title="다음(최신) 결과">›</button>
     </div>` : '';
-  if(!L) return errBanner + `<div class="llm">${pager}<span class="muted">분석함 · 정보를 못 찾음</span><div class="llmfoot">${again}</div></div>`;
+  if(!L) return errBanner + `<div class="llm">${pager}<span class="muted">분석함 · 정보를 못 찾음</span><div class="llmfoot">${again}</div></div>${qaHtml(n)}`;
   const hot = (idx===0 && L.highlight) ? ' hot' : '';
-  return errBanner + `<div class="llm${hot}">${pager}${llmBox(L)}<div class="llmfoot">${again}</div></div>`;
+  return errBanner + `<div class="llm${hot}">${pager}${llmBox(L)}<div class="llmfoot">${again}</div></div>${qaHtml(n)}`;
 }
 function histNav(id, delta){
   const n = NOTICES.find(x=>x.id===id); if(!n) return;
@@ -451,6 +474,76 @@ async function enrichNotice(id, force){
     }
   }catch(e){ n._llmError = 'network'; }  // 우리 서버조차 응답 없음
   n._loading = false; render();
+}
+/* 추가질문(Q&A) 영역 — 분석된 공고에만 표시 */
+function qaHtml(n){
+  if(!n.enriched) return '';
+  const hist = (n.qa||[]).map(x=>
+    `<div class="qaq">Q. ${esc(x.q)}</div><div class="qaa">${esc(x.a)}</div>`).join('');
+  const streaming = n._asking ? `<div class="askstream">
+      <div class="stphase" id="askphase${n.id}">연결 중…</div>
+      <details open><summary>💭 생각 과정 (실시간)</summary><pre class="thinkbody" id="askthink${n.id}"></pre></details>
+      <pre id="askout${n.id}"></pre>
+    </div>` : '';
+  return `<div class="qa">${hist}${streaming}
+    <div class="askbox">
+      <input id="askin${n.id}" placeholder="이 공고에 추가 질문…" ${n._asking?'disabled':''}
+        onkeydown="if(event.key==='Enter')askNotice('${n.id}')">
+      <button class="analyze" onclick="askNotice('${n.id}')" ${n._asking?'disabled':''}>질문</button>
+    </div>
+  </div>`;
+}
+async function askNotice(id){
+  const n = NOTICES.find(x=>x.id===id); if(!n) return;
+  const input = document.getElementById('askin'+id);
+  const question = (input ? input.value : '').trim();
+  if(!question || n._asking) return;
+  n._asking = true; n._llmError = null; render();
+  const el = k => document.getElementById(k + id);
+  const append = (e, t) => { if(e){ e.textContent += t; e.scrollTop = e.scrollHeight; } };
+  try{
+    const res = await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id, question, stream:true})});
+    if(!res.ok || !res.body) throw new Error('bad response');
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    for(;;){
+      const {value, done} = await reader.read();
+      if(done) break;
+      buf += dec.decode(value, {stream:true});
+      let i;
+      while((i = buf.indexOf('\n\n')) >= 0){
+        const raw = buf.slice(0, i); buf = buf.slice(i+2);
+        const line = raw.split('\n').find(l => l.startsWith('data:'));
+        if(!line) continue;
+        let ev; try{ ev = JSON.parse(line.slice(5)); }catch{ continue; }
+        if(ev.phase){ const e = el('askphase'); if(e) e.textContent = ev.phase; }
+        else if(ev.thinking) append(el('askthink'), ev.thinking);
+        else if(ev.content) append(el('askout'), ev.content);
+        else if(ev.error){ n._llmError = ev.error; }
+        else if('done' in ev){ if(ev.qa) n.qa = ev.qa; }
+      }
+    }
+  }catch(e){ n._llmError = 'network'; }
+  n._asking = false; render();
+}
+/* 메모 인라인 편집 */
+function editMemo(id){
+  const n = NOTICES.find(x=>x.id===id); if(!n) return;
+  n._editMemo = true; render();
+  const e = document.getElementById('memoedit'+id);
+  if(e){ e.focus(); e.setSelectionRange(e.value.length, e.value.length); }
+}
+async function saveMemo(id, text){
+  const n = NOTICES.find(x=>x.id===id); if(!n || !n._editMemo) return;  // Enter 후 blur 중복 방지
+  n._editMemo = false;
+  text = (text||'').trim();
+  if(text === (n.memo||'')){ render(); return; }
+  n.memo = text; render();                              // 낙관적 갱신
+  try{
+    await fetch('/api/memo',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id, text})});
+  }catch(e){ /* 실패 시 다음 목록 갱신 때 되돌아옴 */ }
 }
 async function toggleMute(id){
   const n = NOTICES.find(x=>x.id===id); if(!n) return;

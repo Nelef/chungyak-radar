@@ -42,6 +42,23 @@ CREATE TABLE IF NOT EXISTS muted_notices (
     notice_id TEXT PRIMARY KEY,          -- 알림 끈 공고(관심 없음) → 대시보드 접힘 + 발송 제외
     at        TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS memos (
+    notice_id TEXT PRIMARY KEY,          -- 공고별 사용자 메모(대시보드 타이틀 아래 상시 표시)
+    text      TEXT NOT NULL,
+    at        TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS notice_qa (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    notice_id TEXT NOT NULL,             -- 분석 후 추가질문 기록
+    q         TEXT NOT NULL,
+    a         TEXT NOT NULL,
+    at        TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pdf_texts (
+    notice_id TEXT PRIMARY KEY,          -- LLM 분석 때 뽑은 공고문 텍스트 캐시(추가질문 컨텍스트)
+    text      TEXT NOT NULL,
+    at        TEXT NOT NULL
+);
 """
 
 
@@ -113,6 +130,7 @@ def list_notices(matched_only: bool = True):
         q += " WHERE matched = 1"
     q += " ORDER BY COALESCE(r1_start, sp_start, notice_date) DESC"
     llm, hist, muted = {}, {}, set()
+    memos, qa = {}, {}
     with conn() as c:
         rows = [dict(r) for r in c.execute(q).fetchall()]
         try:  # LLM 분석결과·히스토리(cost_cache) 병합
@@ -125,6 +143,15 @@ def list_notices(matched_only: bool = True):
             muted = {x["notice_id"] for x in c.execute("SELECT notice_id FROM muted_notices").fetchall()}
         except sqlite3.OperationalError:
             pass
+        try:  # 공고별 메모
+            memos = {x["notice_id"]: x["text"] for x in c.execute("SELECT notice_id, text FROM memos")}
+        except sqlite3.OperationalError:
+            pass
+        try:  # 추가질문 기록(공고별 시간순)
+            for x in c.execute("SELECT notice_id, q, a, at FROM notice_qa ORDER BY id"):
+                qa.setdefault(x["notice_id"], []).append({"q": x["q"], "a": x["a"], "at": x["at"]})
+        except sqlite3.OperationalError:
+            pass
     for r in rows:
         r["flags"] = json.loads(r["flags"] or "{}")
         r["tags"] = json.loads(r["tags"] or "[]")
@@ -133,6 +160,8 @@ def list_notices(matched_only: bool = True):
         r["llm"] = llm.get(r["id"])              # 결과 dict / None(실패) / 없음
         r["llm_history"] = hist.get(r["id"], []) # 최근 3개 결과
         r["muted"] = r["id"] in muted            # 알림 끔(관심 없음)
+        r["memo"] = memos.get(r["id"], "")       # 사용자 메모
+        r["qa"] = qa.get(r["id"], [])            # 추가질문 기록
     return rows
 
 
@@ -227,6 +256,50 @@ def set_muted(nid: str, muted: bool):
             c.execute("INSERT OR IGNORE INTO muted_notices (notice_id, at) VALUES (?, ?)", (nid, now_kst()))
         else:
             c.execute("DELETE FROM muted_notices WHERE notice_id = ?", (nid,))
+
+
+def set_memo(nid: str, text: str):
+    """공고 메모 저장. 빈 문자열이면 삭제."""
+    text = (text or "").strip()
+    with conn() as c:
+        if text:
+            c.execute(
+                "INSERT INTO memos (notice_id, text, at) VALUES (?,?,?) "
+                "ON CONFLICT(notice_id) DO UPDATE SET text=excluded.text, at=excluded.at",
+                (nid, text, now_kst()),
+            )
+        else:
+            c.execute("DELETE FROM memos WHERE notice_id = ?", (nid,))
+
+
+def add_qa(nid: str, q: str, a: str):
+    """추가질문 1건 기록."""
+    with conn() as c:
+        c.execute("INSERT INTO notice_qa (notice_id, q, a, at) VALUES (?,?,?,?)",
+                  (nid, q, a, now_kst()))
+
+
+def list_qa(nid: str):
+    """공고의 추가질문 기록(시간순)."""
+    with conn() as c:
+        return [{"q": r["q"], "a": r["a"], "at": r["at"]}
+                for r in c.execute("SELECT q, a, at FROM notice_qa WHERE notice_id = ? ORDER BY id", (nid,))]
+
+
+def set_pdf_text(nid: str, text: str):
+    """공고문 텍스트 캐시(추가질문 컨텍스트용)."""
+    with conn() as c:
+        c.execute(
+            "INSERT INTO pdf_texts (notice_id, text, at) VALUES (?,?,?) "
+            "ON CONFLICT(notice_id) DO UPDATE SET text=excluded.text, at=excluded.at",
+            (nid, text, now_kst()),
+        )
+
+
+def get_pdf_text(nid: str):
+    with conn() as c:
+        row = c.execute("SELECT text FROM pdf_texts WHERE notice_id = ?", (nid,)).fetchone()
+        return row["text"] if row else None
 
 
 def is_muted(nid: str) -> bool:

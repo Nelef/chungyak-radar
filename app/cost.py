@@ -310,6 +310,7 @@ def _openai_terms(pdf_bytes, s, prompt=None, keywords=None, on_event=None):
     text = _pdf_text(pdf_bytes, keywords=keywords)
     if not text:
         return None
+    _emit(on_event, pdf_text=text)  # 추가질문 컨텍스트 캐시용(enrich이 가로채 저장, 브라우저엔 안 보냄)
     body = _openai_body(s, [{"role": "user", "content": (prompt or OPENAI_PROMPT) + "\n\n---공고문---\n" + text}], 8000)
     url = s["base_url"].rstrip("/") + "/v1/chat/completions"
     if on_event:
@@ -832,6 +833,17 @@ def enrich(notice, cfg, force=False, on_event=None):
         cached = _cache_get(nid)
         if cached != "miss":
             return cached
+
+    def _intercept(ev):
+        """pdf_text 이벤트는 DB에 캐시하고(추가질문 컨텍스트), 나머지만 호출자로 전달."""
+        if "pdf_text" in ev:
+            try:
+                db.set_pdf_text(nid, ev["pdf_text"])
+            except Exception as e:  # noqa: BLE001
+                log.warning("공고문 텍스트 캐시 실패(%s): %s", nid, e)
+            return
+        _emit(on_event, **ev)
+
     result = None
     try:
         src = notice.get("source")
@@ -840,15 +852,15 @@ def enrich(notice, cfg, force=False, on_event=None):
             flags = notice.get("flags") or {}
             regulated = bool(flags.get("투기과열") or flags.get("조정대상"))
             result = _build(notice, regulated, ccfg, (cfg or {}).get("profile"),
-                            remndr=(src == "applyhome_remndr"), on_event=on_event)
+                            remndr=(src == "applyhome_remndr"), on_event=_intercept)
         else:
             profile = (cfg or {}).get("profile")
             if src == "board":
-                result = _build_rent(notice, min_area, profile, on_event)
+                result = _build_rent(notice, min_area, profile, _intercept)
             elif src == "applyhome_rent":
-                result = _build_applyhome_rent(notice, min_area, profile, on_event)
+                result = _build_applyhome_rent(notice, min_area, profile, _intercept)
             elif src in ("lh_rent", "gh"):
-                result = _build_public_rent(notice, min_area, profile, on_event)
+                result = _build_public_rent(notice, min_area, profile, _intercept)
     except LLMDownError as e:  # 서버 죽음: 실패로 캐시하지 말고(=재시도 가능) 명시적 오류 반환
         log.warning("%s LLM 서버 응답 없음: %s", notice.get("name"), e)
         return {"error": "llm_down", "detail": str(e)[:200]}
@@ -857,3 +869,49 @@ def enrich(notice, cfg, force=False, on_event=None):
     _cache_put(nid, result, ok=bool(result))
     return result
 
+
+
+# ---------------------------------------------------------------- 추가질문
+def ask(notice, question, cfg, on_event=None):
+    """분석된 공고에 대한 추가질문. 공고문 텍스트 캐시 + 이전 분석결과 + 이전 Q&A를 컨텍스트로 쓴다.
+    반환: 답변 문자열(DB에 Q&A 기록). LLM 미설정/다운이면 LLMDownError."""
+    s = llm_settings()
+    if not s.get("provider"):
+        raise LLMDownError("LLM 미설정 (대시보드 ⚙에서 설정)")
+    question = (question or "").strip()
+    if not question:
+        return None
+    nid = notice["id"]
+    prompt = [
+        f"청약/임대 공고에 대한 질문응답이다. 공고: '{notice.get('name')}' "
+        f"({notice.get('region') or ''} {notice.get('house_kind') or ''}). "
+        f"신청자 상황: {_who((cfg or {}).get('profile'))}. "
+        "아래 근거 자료를 바탕으로 한국어로 간결하게(2~5문장) 답하라. "
+        "근거에 없는 내용은 추측하지 말고 공고문 확인이 필요하다고 답하라.",
+    ]
+    cached = _cache_get(nid)
+    if cached and cached != "miss":
+        prompt.append("[이전 AI 분석결과]\n" + json.dumps(cached, ensure_ascii=False)[:3000])
+    pdf_text = db.get_pdf_text(nid)
+    if pdf_text:
+        prompt.append("[공고문 텍스트]\n" + pdf_text)
+    history = db.list_qa(nid)
+    if history:
+        prompt.append("[이전 질문응답]\n" + "\n".join(f"Q: {h['q']}\nA: {h['a']}" for h in history[-5:]))
+    prompt.append(f"[질문]\n{question}")
+    body = _openai_body(s, [{"role": "user", "content": "\n\n".join(prompt)}], 4000)
+    url = s["base_url"].rstrip("/") + "/v1/chat/completions"
+    if on_event:
+        _emit(on_event, phase="🤖 답변 생성 중…")
+        answer = _openai_stream(url, body, _openai_headers(s), on_event)
+    else:
+        try:
+            r = requests.post(url, json=body, headers=_openai_headers(s), timeout=180)
+            r.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            raise LLMDownError(str(e)) from e
+        answer = r.json()["choices"][0]["message"]["content"]
+    answer = (answer or "").strip()
+    if answer:
+        db.add_qa(nid, question, answer)
+    return answer
