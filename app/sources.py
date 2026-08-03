@@ -3,7 +3,10 @@
 소스 1) 청약홈 — 공공데이터포털 '한국부동산원_주택청약 분양정보 조회 서비스'
         https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1/getAPTLttotPblancDetail
 소스 2) LH청약플러스 — 공공데이터포털 '한국토지주택공사_분양임대공고문 정보'
-        http://apis.data.go.kr/B552555/lhLeaseNoticeInfo1/lhLeaseNoticeInfo1
+        https://apis.data.go.kr/B552555/lhLeaseNoticeInfo1/lhLeaseNoticeInfo1
+        상위유형(UPP_AIS_TP_CD): 05 분양주택 / 06 임대주택 / 39 신혼희망타운
+        ※ 39는 '공공분양(신혼희망)'과 '행복주택(신혼희망)'이 섞여 나오므로
+          유형명에 '분양'이 있으면 분양, 없으면 임대로 갈라서 넣는다.
 
 두 API 모두 data.go.kr에서 활용신청(자동승인) 후 발급받는 인증키 필요.
 MOCK=1 환경변수를 주면 실제 호출 없이 샘플 데이터로 파이프라인을 검증할 수 있다.
@@ -22,7 +25,13 @@ from urllib3.util.ssl_ import create_urllib3_context
 log = logging.getLogger("sources")
 
 APPLYHOME_BASE = "https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1"
-LH_BASE = "http://apis.data.go.kr/B552555/lhLeaseNoticeInfo1/lhLeaseNoticeInfo1"
+# https 필수. http로 호출하면 간헐적으로 응답이 오지 않아 ReadTimeout으로 죽는다(2026-08-03 확인).
+LH_BASE = "https://apis.data.go.kr/B552555/lhLeaseNoticeInfo1/lhLeaseNoticeInfo1"
+LH_UPP_SALE = ("05", "39")   # 분양주택 + 신혼희망타운(공공분양)
+LH_UPP_RENT = ("06", "39")   # 임대주택 + 신혼희망타운(행복주택)
+LH_TIMEOUT = 60
+LH_RETRIES = 3
+LH_MAX_PAGES = 10            # 폭주 방지 상한 (PG_SZ=100 → 최대 1000건/조합)
 # GH 경기주택도시공사 청약센터 (행복주택·국민임대 등 경기도 자체 공급)
 GH_LIST = "https://apply.gh.or.kr/sb/sr/sr7150/selectPbancRentHouseList.do"
 GH_DETAIL = "https://apply.gh.or.kr/sb/sr/sr7150/selectPbancDetailView.do"
@@ -176,55 +185,73 @@ def fetch_pbl_pvt_rent(service_key: str) -> list[dict]:
 
 
 # --------------------------------------------------------------------- LH
-def fetch_lh(service_key: str) -> list[dict]:
-    """LH 분양주택 공고 (뉴:홈, 3기 신도시 본청약, 신혼희망타운이 이 채널로 나옴)."""
-    since = (datetime.now() - timedelta(days=LOOKBACK_DAYS)).strftime("%Y%m%d")
-    today = datetime.now().strftime("%Y%m%d")
-    out = []
-    for cnp in ("11", "41"):  # 서울, 경기
+def _lh_fetch_rows(service_key: str, upp: str, cnp: str, since: str, today: str) -> list:
+    """LH API 한 조합(상위유형×지역)을 페이지 끝까지 읽어 dsList를 모아 반환.
+    타임아웃 등 일시 오류는 재시도하고, 끝까지 실패하면 예외를 올려 호출자가 로그를 남긴다."""
+    rows: list = []
+    for page in range(1, LH_MAX_PAGES + 1):
         params = {
             "serviceKey": service_key,
             "PG_SZ": 100,
-            "PAGE": 1,
-            "UPP_AIS_TP_CD": "05",  # 분양주택
+            "PAGE": page,
+            "UPP_AIS_TP_CD": upp,
             # 공고게시일 필터. 실물 검증 결과 PAN_NT_ST_DT는 무시되고
             # PAN_ST_DT/PAN_ED_DT가 실제 필터라 이 둘로 최근 LOOKBACK_DAYS 범위를 지정.
             "PAN_ST_DT": since,
             "PAN_ED_DT": today,
             "CNP_CD": cnp,
         }
-        r = requests.get(LH_BASE, params=params, timeout=30)
-        r.raise_for_status()
-        body = r.json()
-        # LH 응답은 [[{resHeader}], [{"dsList":[...]}]] 형태. 방어적으로 파싱.
-        rows = []
-        if isinstance(body, list):
-            for part in body:
-                if isinstance(part, list):
-                    for p in part:
-                        if isinstance(p, dict) and "dsList" in p:
-                            rows = p["dsList"] or []
-                elif isinstance(part, dict) and "dsList" in part:
-                    rows = part["dsList"] or []
-        elif isinstance(body, dict):
-            rows = body.get("dsList", [])
-        for it in rows:
-            pan_id = _get(it, "PAN_ID")
-            if not pan_id:
-                continue
-            out.append({
-                "id": f"lh:{pan_id}",
-                "source": "lh",
-                "name": _get(it, "PAN_NM", default="(이름 없음)"),
-                "house_kind": _get(it, "AIS_TP_CD_NM", "UPP_AIS_TP_NM", default="분양주택"),
-                "region": _get(it, "CNP_CD_NM"),
-                "address": _get(it, "CNP_CD_NM"),
-                "notice_date": _fmt_lh_date(_get(it, "PAN_NT_ST_DT")),
-                "r1_end": _fmt_lh_date(_get(it, "CLSG_DT")),  # 공고 마감일을 접수 마감으로 취급
-                "url": _get(it, "DTL_URL"),
-                "flags": {"상태": _get(it, "PAN_SS", default="")},
-                "raw": it,
-            })
+        got, last_err = None, None
+        for attempt in range(1, LH_RETRIES + 1):
+            try:
+                r = requests.get(LH_BASE, params=params, timeout=LH_TIMEOUT)
+                r.raise_for_status()
+                got = _lh_dslist(r.json())
+                break
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                log.warning("LH 조회 실패(upp=%s cnp=%s page=%d, %d/%d회): %s",
+                            upp, cnp, page, attempt, LH_RETRIES, e)
+        if got is None:
+            raise RuntimeError(f"LH 조회 실패(upp={upp} cnp={cnp} page={page}): {last_err}")
+        rows += got
+        if len(got) < 100:  # 마지막 페이지
+            break
+    else:
+        log.warning("LH 페이지 상한(%d) 도달 — upp=%s cnp=%s, 이후 페이지 누락 가능",
+                    LH_MAX_PAGES, upp, cnp)
+    return rows
+
+
+def fetch_lh(service_key: str) -> list[dict]:
+    """LH 분양주택 공고 (뉴:홈, 3기 신도시 본청약).
+    UPP=05(분양주택)와 UPP=39(신혼희망타운) 중 '공공분양(신혼희망)' 계열을 모은다."""
+    since = (datetime.now() - timedelta(days=LOOKBACK_DAYS)).strftime("%Y%m%d")
+    today = datetime.now().strftime("%Y%m%d")
+    out, seen = [], set()
+    for upp in LH_UPP_SALE:
+        for cnp in ("11", "41"):  # 서울, 경기
+            for it in _lh_fetch_rows(service_key, upp, cnp, since, today):
+                pan_id = _get(it, "PAN_ID")
+                if not pan_id or pan_id in seen:
+                    continue
+                kind = _get(it, "AIS_TP_CD_NM", "UPP_AIS_TP_NM", default="분양주택")
+                if upp == "39" and "분양" not in kind:
+                    continue  # 신혼희망타운 행복주택은 fetch_lh_lease가 담당
+                seen.add(pan_id)
+                out.append({
+                    "id": f"lh:{pan_id}",
+                    "source": "lh",
+                    "name": _get(it, "PAN_NM", default="(이름 없음)"),
+                    "house_kind": kind,
+                    "region": _get(it, "CNP_CD_NM"),
+                    "address": _get(it, "CNP_CD_NM"),
+                    "notice_date": _fmt_lh_date(_get(it, "PAN_NT_ST_DT")),
+                    "r1_end": _fmt_lh_date(_get(it, "CLSG_DT")),  # 공고 마감일을 접수 마감으로 취급
+                    "url": _get(it, "DTL_URL"),
+                    "flags": {"상태": _get(it, "PAN_SS", default="")},
+                    "raw": it,
+                })
     return out
 
 
@@ -268,43 +295,44 @@ def _lh_detail(url) -> dict:
 
 
 def fetch_lh_lease(service_key: str, types=None) -> list[dict]:
-    """LH 임대 공고(UPP=06). types에 든 유형만 수집(기본 RENT_TYPES)."""
+    """LH 임대 공고. UPP=06(임대주택) + UPP=39(신혼희망타운) 중 행복주택 계열.
+    types에 든 유형만 수집(기본 RENT_TYPES).
+    ※ '행복주택(신혼희망)'은 types의 '행복주택'에 부분일치로 걸린다."""
     types = tuple(types or RENT_TYPES)
     since = (datetime.now() - timedelta(days=LOOKBACK_DAYS)).strftime("%Y%m%d")
     today = datetime.now().strftime("%Y%m%d")
-    out = []
-    for cnp in ("11", "41"):  # 서울, 경기
-        params = {
-            "serviceKey": service_key, "PG_SZ": 100, "PAGE": 1,
-            "UPP_AIS_TP_CD": "06",  # 임대주택
-            "PAN_ST_DT": since, "PAN_ED_DT": today, "CNP_CD": cnp,
-        }
-        r = requests.get(LH_BASE, params=params, timeout=30)
-        r.raise_for_status()
-        for it in _lh_dslist(r.json()):
-            pan_id = _get(it, "PAN_ID")
-            kind = _get(it, "AIS_TP_CD_NM", "UPP_AIS_TP_NM", default="")
-            if not pan_id or not any(k in kind for k in types):
-                continue  # 소득요건 초과·대상 외 유형(국민임대·행복주택·영구임대 등) 제외
-            pan_nm = _get(it, "PAN_NM", default="(이름 없음)")
-            url = _get(it, "DTL_URL")
-            det = _lh_detail(url)  # 소재지·전용면적(통근 계산에 필요)
-            it = {**it, "area_text": det.get("area_text")}
-            out.append({
-                "id": f"lh_rent:{pan_id}",
-                "source": "lh_rent",
-                "name": f"[{kind}] " + pan_nm,
-                "house_kind": kind,
-                "region": _get(it, "CNP_CD_NM"),
-                "address": det.get("address") or _get(it, "CNP_CD_NM"),
-                "total_supply": det.get("total_supply"),
-                "notice_date": _fmt_lh_date(_get(it, "PAN_NT_ST_DT")),
-                "r1_start": _fmt_lh_date(_get(it, "PAN_NT_ST_DT")),  # 접수시작 별도 필드 없어 공고일로
-                "r1_end": _fmt_lh_date(_get(it, "CLSG_DT")),
-                "url": url,
-                "flags": {"임대": True},
-                "raw": it,
-            })
+    out, seen = [], set()
+    for upp in LH_UPP_RENT:
+        for cnp in ("11", "41"):  # 서울, 경기
+            for it in _lh_fetch_rows(service_key, upp, cnp, since, today):
+                pan_id = _get(it, "PAN_ID")
+                kind = _get(it, "AIS_TP_CD_NM", "UPP_AIS_TP_NM", default="")
+                if not pan_id or pan_id in seen:
+                    continue
+                if upp == "39" and "분양" in kind:
+                    continue  # 신혼희망타운 공공분양은 fetch_lh가 담당
+                if not any(k in kind for k in types):
+                    continue  # 소득요건 초과·대상 외 유형(국민임대·영구임대 등) 제외
+                seen.add(pan_id)
+                pan_nm = _get(it, "PAN_NM", default="(이름 없음)")
+                url = _get(it, "DTL_URL")
+                det = _lh_detail(url)  # 소재지·전용면적(통근 계산에 필요)
+                it = {**it, "area_text": det.get("area_text")}
+                out.append({
+                    "id": f"lh_rent:{pan_id}",
+                    "source": "lh_rent",
+                    "name": f"[{kind}] " + pan_nm,
+                    "house_kind": kind,
+                    "region": _get(it, "CNP_CD_NM"),
+                    "address": det.get("address") or _get(it, "CNP_CD_NM"),
+                    "total_supply": det.get("total_supply"),
+                    "notice_date": _fmt_lh_date(_get(it, "PAN_NT_ST_DT")),
+                    "r1_start": _fmt_lh_date(_get(it, "PAN_NT_ST_DT")),  # 접수시작 별도 필드 없어 공고일로
+                    "r1_end": _fmt_lh_date(_get(it, "CLSG_DT")),
+                    "url": url,
+                    "flags": {"임대": True},
+                    "raw": it,
+                })
     return out
 
 
@@ -445,8 +473,36 @@ def fetch_mock() -> list[dict]:
     ]
 
 
+FAIL_ALERT_AFTER = 3  # 소스가 이 횟수만큼 연속 실패하면 텔레그램으로 알린다
+
+
+def _run_source(name: str, fn, *args) -> list[dict]:
+    """소스 하나를 실행하고 연속 실패 횟수를 DB에 기록.
+    조용히 넘어가면 공고를 놓친 걸 모르므로 N회 연속 실패 시 텔레그램 경고를 보낸다."""
+    from app import db, notify
+
+    key = f"fail_streak:{name}"
+    try:
+        got = fn(*args)
+        log.info("%s: %d건", name, len(got))
+        if (db.get_meta(key) or "0") != "0":
+            db.set_meta(key, "0")
+            notify.send_telegram(f"✅ 수집 복구: {name} 정상화됐습니다.")
+        return got
+    except Exception as e:  # noqa: BLE001
+        streak = int(db.get_meta(key) or "0") + 1
+        db.set_meta(key, str(streak))
+        log.error("%s 실패(%d회 연속): %s", name, streak, e)
+        if streak == FAIL_ALERT_AFTER:
+            notify.send_telegram(
+                f"⚠️ 수집 실패 경고\n{name}이(가) {streak}회 연속 실패했습니다.\n"
+                f"마지막 오류: {e}\n공고를 놓치고 있을 수 있습니다."
+            )
+        return []
+
+
 def collect_all() -> list[dict]:
-    """활성화된 소스 전부에서 수집. 실패한 소스는 건너뛰고 로그만 남긴다."""
+    """활성화된 소스 전부에서 수집. 실패한 소스는 건너뛰고 연속 실패 시 알린다."""
     from app.boards import fetch_boards
 
     if os.environ.get("MOCK") == "1":
@@ -463,37 +519,18 @@ def collect_all() -> list[dict]:
 
     if ah_key:
         for fn in (fetch_applyhome, fetch_applyhome_remndr, fetch_pbl_pvt_rent):
-            try:
-                got = fn(ah_key)
-                log.info("%s: %d건", fn.__name__, len(got))
-                notices += got
-            except Exception as e:  # noqa: BLE001
-                log.error("%s 실패: %s", fn.__name__, e)
+            notices += _run_source(fn.__name__, fn, ah_key)
     else:
         log.warning("APPLYHOME_API_KEY 미설정 — 청약홈 수집 건너뜀")
 
     if lh_key:
-        try:
-            got = fetch_lh(lh_key)  # 분양(05)
-            log.info("fetch_lh: %d건", len(got))
-            notices += got
-        except Exception as e:  # noqa: BLE001
-            log.error("fetch_lh 실패: %s", e)
-        try:
-            got = fetch_lh_lease(lh_key, rent_types)  # 임대(06)
-            log.info("fetch_lh_lease: %d건", len(got))
-            notices += got
-        except Exception as e:  # noqa: BLE001
-            log.error("fetch_lh_lease 실패: %s", e)
+        notices += _run_source("fetch_lh", fetch_lh, lh_key)                     # 분양(05+39)
+        notices += _run_source("fetch_lh_lease", fetch_lh_lease, lh_key, rent_types)  # 임대(06+39)
     else:
         log.warning("LH_API_KEY 미설정 — LH 수집 건너뜀")
 
-    try:  # GH 경기주택도시공사 (키 불필요, 목록 크롤)
-        got = fetch_gh(rent_types)
-        log.info("fetch_gh: %d건", len(got))
-        notices += got
-    except Exception as e:  # noqa: BLE001
-        log.error("fetch_gh 실패: %s", e)
+    # GH 경기주택도시공사 (키 불필요, 목록 크롤)
+    notices += _run_source("fetch_gh", fetch_gh, rent_types)
 
     notices += fetch_boards(cfg.get("boards"))
     return notices
