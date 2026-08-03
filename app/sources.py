@@ -37,7 +37,9 @@ GH_LIST = "https://apply.gh.or.kr/sb/sr/sr7150/selectPbancRentHouseList.do"
 GH_DETAIL = "https://apply.gh.or.kr/sb/sr/sr7150/selectPbancDetailView.do"
 # 수집할 LH·GH 임대 유형 기본값. 실제 값은 config.yaml의 lh_gh_rent_types에서 관리
 # (소득요건 초과 유형 제외 — 소득·가구원수가 바뀌면 config만 고치면 된다).
-RENT_TYPES = ("통합공공임대", "공공임대", "6년 공공임대", "장기전세")
+# config.yaml과 같은 목록을 유지할 것. 예전에 '행복주택'이 빠져 있어 CONFIG_PATH가
+# 잡히지 않는 환경에서 행복주택(신혼희망)이 전부 유실됐다.
+RENT_TYPES = ("행복주택", "통합공공임대", "공공임대", "6년 공공임대", "장기전세")
 UA = {"User-Agent": "Mozilla/5.0"}
 
 LOOKBACK_DAYS = 60  # 최근 N일 공고만 조회
@@ -239,16 +241,24 @@ def fetch_lh(service_key: str) -> list[dict]:
                 if upp == "39" and "분양" not in kind:
                     continue  # 신혼희망타운 행복주택은 fetch_lh_lease가 담당
                 seen.add(pan_id)
+                url = _get(it, "DTL_URL")
+                det = _lh_detail(url)  # 접수기간·소재지(API에 없음)
                 out.append({
                     "id": f"lh:{pan_id}",
                     "source": "lh",
                     "name": _get(it, "PAN_NM", default="(이름 없음)"),
                     "house_kind": kind,
                     "region": _get(it, "CNP_CD_NM"),
-                    "address": _get(it, "CNP_CD_NM"),
+                    # 상세의 소재지가 있으면 그걸 쓴다. API는 '경기도'뿐이라
+                    # 지오코딩이 광역 중심점으로 잡혀 통근시간이 전부 같게 나왔다.
+                    "address": det.get("address") or _get(it, "CNP_CD_NM"),
+                    "total_supply": det.get("total_supply"),
                     "notice_date": _fmt_lh_date(_get(it, "PAN_NT_ST_DT")),
-                    "r1_end": _fmt_lh_date(_get(it, "CLSG_DT")),  # 공고 마감일을 접수 마감으로 취급
-                    "url": _get(it, "DTL_URL"),
+                    "r1_start": _fmt_lh_date(det.get("r1_start")),
+                    # 접수기간을 못 읽으면 CLSG_DT(공고게시 종료일)로 폴백
+                    "r1_end": _fmt_lh_date(det.get("r1_end") or _get(it, "CLSG_DT")),
+                    "winner_date": _fmt_lh_date(det.get("winner_date")),
+                    "url": url,
                     "flags": {"상태": _get(it, "PAN_SS", default="")},
                     "raw": it,
                 })
@@ -268,18 +278,22 @@ def _lh_dslist(body) -> list:
 
 
 def _lh_detail(url) -> dict:
-    """LH 임대 상세페이지에서 소재지·전용면적을 읽는다.
-    임대 API는 주소가 '경기도'처럼 광역뿐이라 통근 계산에 상세의 정확한 주소가 필요하다.
-    형식: <li class="w100">소재지 : 경기도 성남시 수정구 금토동 194-1</li>"""
+    """LH 상세페이지에서 소재지·전용면적·접수기간을 읽는다.
+    API 응답에는 주소가 '경기도'처럼 광역뿐이고 접수기간 필드가 아예 없다
+    (제공 필드: PAN_NT_ST_DT 공고일 / PAN_DT / CLSG_DT 공고게시종료일 / PAN_SS 상태).
+    CLSG_DT를 접수마감으로 쓰면 실제 접수기간과 어긋나므로 상세에서 직접 읽는다.
+    형식: 소재지 : 경기도 성남시 수정구 금토동 194-1
+          접수기간 : 2026.08.11 ~ 2026.08.12 / 당첨자발표일 : 2026.11.13"""
     if not url:
         return {}
     try:
         r = requests.get(url, headers=UA, timeout=25)
         r.raise_for_status()
     except Exception as e:  # noqa: BLE001
-        log.warning("LH 임대 상세 실패(%s): %s", url[:60], e)
+        log.warning("LH 상세 실패(%s): %s", url[:60], e)
         return {}
-    txt = re.sub(r"<[^>]+>", " ", r.text)
+    txt = re.sub(r"<script.*?</script>", " ", r.text, flags=re.S)
+    txt = re.sub(r"<[^>]+>", " ", txt)
     txt = re.sub(r"\s+", " ", txt)
     out = {}
     m = re.search(r"소재지\s*:\s*([^:<]{4,60}?)\s*(?:전용면적|총 세대수|난방|입주|$)", txt)
@@ -291,6 +305,25 @@ def _lh_detail(url) -> dict:
     m = re.search(r"총 세대수\s*:\s*(\d+)", txt)
     if m:
         out["total_supply"] = int(m.group(1))
+    # 접수기간. 임대와 분양의 상세 표기가 달라 두 형식을 모두 본다.
+    #  임대: "접수기간 : 2026.08.11 ~ 2026.08.12"  ('서류접수기간'은 lookbehind로 배제)
+    #  분양: 계층별 공급일정 표 "예비신혼부부 2026.08.03 10:00 ~ 2026.08.04 16:00"
+    #        (당첨자 서류제출기간·계약체결기간은 시각이 없어 자연히 걸러진다)
+    starts, ends = [], []
+    m = re.search(r"(?<!서류)접수기간\s*:\s*(\d{4}\.\d{2}\.\d{2})\s*~\s*(\d{4}\.\d{2}\.\d{2})", txt)
+    if m:
+        starts.append(m.group(1))
+        ends.append(m.group(2))
+    for m in re.finditer(
+        r"(\d{4}\.\d{2}\.\d{2})\s*\d{1,2}:\d{2}\s*~\s*(\d{4}\.\d{2}\.\d{2})\s*\d{1,2}:\d{2}", txt
+    ):
+        starts.append(m.group(1))   # 순위·계층별로 여러 줄이면
+        ends.append(m.group(2))     # 가장 이른 시작 ~ 가장 늦은 마감
+    if starts:
+        out["r1_start"], out["r1_end"] = min(starts), max(ends)
+    m = re.search(r"당첨자\s*발표일(?:자)?\s*:\s*(\d{4}\.\d{2}\.\d{2})", txt)
+    if m:
+        out["winner_date"] = m.group(1)
     return out
 
 
@@ -327,8 +360,10 @@ def fetch_lh_lease(service_key: str, types=None) -> list[dict]:
                     "address": det.get("address") or _get(it, "CNP_CD_NM"),
                     "total_supply": det.get("total_supply"),
                     "notice_date": _fmt_lh_date(_get(it, "PAN_NT_ST_DT")),
-                    "r1_start": _fmt_lh_date(_get(it, "PAN_NT_ST_DT")),  # 접수시작 별도 필드 없어 공고일로
-                    "r1_end": _fmt_lh_date(_get(it, "CLSG_DT")),
+                    # 접수기간은 상세에서 읽는다(API 미제공). 못 읽으면 공고일/CLSG_DT로 폴백
+                    "r1_start": _fmt_lh_date(det.get("r1_start") or _get(it, "PAN_NT_ST_DT")),
+                    "r1_end": _fmt_lh_date(det.get("r1_end") or _get(it, "CLSG_DT")),
+                    "winner_date": _fmt_lh_date(det.get("winner_date")),
                     "url": url,
                     "flags": {"임대": True},
                     "raw": it,
