@@ -67,9 +67,14 @@ def _keyword_ok(board: dict, title: str) -> bool:
     return (not kws) or any(kw in title for kw in kws)
 
 
-# SH 상세 본문에서 접수기간을 뽑기 위한 라벨/날짜 패턴.
-# 라벨 뒤 좁은 창에서 날짜 1~2개를 접수 시작·마감으로 본다.
-_APPLY_LABELS = ("모집신청일", "접수기간", "신청기간", "접수 기간", "청약접수", "청약 접수", "신청 접수", "접수일정")
+# 공고 본문에서 접수기간을 뽑기 위한 라벨/날짜 패턴.
+# 실제 표기 예: "■ 청약 접수일 : 2026. 08. 11.(화) 10:00 ~ 2026. 08. 13.(목) 17:00"
+_APPLY_LABELS = ("모집신청일", "접수일", "접수기간", "신청기간", "접수 기간", "청약접수",
+                 "청약 접수", "신청 접수", "접수일정", "인터넷접수", "인터넷 접수")
+# 접수기간이 아닌 다른 일정 라벨. 라벨과 첫 날짜 사이에 이 말이 끼면 그 창은 버린다.
+# (예전에 안내문 "※ 청약 접수 시작 시간과 마감 시간에는…" 뒤의 '서류심사대상자 발표
+#  2026.08.21 / 서류제출기간 08.31'을 접수기간으로 잡아 D-day가 10일씩 틀렸다)
+_NOT_APPLY = ("서류심사", "서류제출", "제출기간", "발표", "당첨", "계약", "입주지정", "소명", "추첨")
 _DATE_ANY = re.compile(r"20\d{2}\s*[.\-/년]\s*\d{1,2}\s*[.\-/월]\s*\d{1,2}")
 
 
@@ -82,20 +87,29 @@ def _iso_date(s: str):
 
 
 def _sh_apply_period(html: str):
-    """SH 상세 본문에서 접수기간(시작, 마감)을 추출. 본문에 없으면(공고문 PDF에만 있거나
-    협동조합 직접지원 상시모집이면) (None, None). 잔여세대/협동조합류는 대부분 여기서 못 잡는다."""
-    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))
+    """공고 본문(SH 상세 HTML 또는 청년안심 포털 JSON의 content)에서 접수기간(시작, 마감) 추출.
+
+    라벨 후보를 전부 훑어 '라벨 → 첫 날짜' 거리가 가장 짧은 것을 고른다. 첫 매칭만
+    쓰면 본문 안내문에 걸려 엉뚱한 일정을 접수기간으로 잡는다. 본문에 없으면
+    (공고문 PDF에만 있거나 상시모집) (None, None)."""
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html or ""))
+    best = None  # (라벨~첫날짜 거리, 시작, 마감)
     for lab in _APPLY_LABELS:
-        i = text.find(lab)
-        if i < 0:
-            continue
-        ds = [_iso_date(x) for x in _DATE_ANY.findall(text[i:i + 140])]
-        ds = [d for d in ds if d]
-        if ds:
+        for m in re.finditer(re.escape(lab), text):
+            win = text[m.end():m.end() + 140]
+            dm = _DATE_ANY.search(win)
+            if not dm:
+                continue
+            if any(k in win[:dm.start()] for k in _NOT_APPLY):
+                continue  # 서류제출·발표 등 접수기간이 아닌 일정
+            ds = [d for d in (_iso_date(x) for x in _DATE_ANY.findall(win)) if d]
+            if not ds:
+                continue
             start = ds[0]
             end = next((d for d in ds[1:] if d >= start), None)  # 시작보다 빠른 날짜는 종료로 안 씀
-            return start, end
-    return None, None
+            if best is None or dm.start() < best[0]:
+                best = (dm.start(), start, end)
+    return (best[1], best[2]) if best else (None, None)
 
 
 def _notice(board: dict, uid: str, title: str, link: str, posted, address="서울") -> dict:
@@ -142,6 +156,13 @@ def _scrape_soco_json(board: dict) -> list[dict]:
             posted = _norm_date(str(it.get("optn1") or it.get("regDate") or ""))
             n = _notice(board, f"soco:{bid}", title, link, posted)
             n["r1_start"] = _norm_date(str(it.get("optn4") or ""))  # 신청 접수 시작일
+            # 목록 JSON의 content에 본문 HTML이 그대로 담겨 있어 접수 '마감일'까지 읽을 수 있다.
+            # (optn5는 항상 null이라 예전엔 마감 리마인더가 안 붙었음 — TODO 5)
+            s, e = _sh_apply_period(str(it.get("content") or ""))
+            if s:
+                n["r1_start"] = s
+            if e:
+                n["r1_end"] = e
             n["raw"]["atchFileId"] = it.get("atchFileId")  # 공고문 PDF 첨부 ID
             n["raw"]["boardId"] = bid
             out.append(n)
