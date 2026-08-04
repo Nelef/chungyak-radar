@@ -79,6 +79,9 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 .tag.warn{background:#FBF2F0; color:var(--red)}
 .tag.cost{background:#EAF3EE; color:var(--green)}
 .tag.hot{background:#FFF3D6; color:#8A6A00; font-weight:700; border:1px solid #E7C766}
+/* 소득 판정 — 카드에서 가장 먼저 눈에 들어와야 하므로 굵게 + 테두리 */
+.tag.ok{background:#E6F6EC; color:#186B3A; font-weight:700; border:1px solid #8FD3A8}
+.tag.no{background:#FDECEA; color:#B3261E; font-weight:700; border:1px solid #F0A9A2}
 .maplink{color:var(--navy); text-decoration:none; font-weight:500; white-space:nowrap}
 .maplink:hover{text-decoration:underline}
 
@@ -336,7 +339,9 @@ function card(n){
   add(n.source==='board'?'신청':'1순위', L.apply_start||n.r1_start, L.apply_end||n.r1_end);
   add('2순위', n.r2_start, n.r2_end);
   if(n.winner_date) steps.push(`<span class="step">발표 <b>${esc(String(n.winner_date).slice(5,10).replace('-','.'))}</b></span>`);
-  const tcls = t => t.includes('⚠')?'warn' : t.includes('🔥')?'hot' : (t.includes('💰')||t.includes('🏠'))?'cost' : '';
+  const tcls = t => t.startsWith('✅')?'ok' : t.startsWith('❌')?'no'
+                  : t.includes('⚠')?'warn' : t.includes('🔥')?'hot'
+                  : (t.includes('💰')||t.includes('🏠'))?'cost' : '';
   const tags = (n.tags||[]).map(t=>`<span class="tag ${tcls(t)}">${esc(t)}</span>`).join('');
   const supply = n.total_supply ? ' · '+n.total_supply+'세대' : '';
   const mq = n.address || n.name || '';

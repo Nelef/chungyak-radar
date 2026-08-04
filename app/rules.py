@@ -58,6 +58,54 @@ def excluded(n: dict, cfg: dict) -> bool:
     return any(kw in name for kw in cfg.get("exclude_keywords", []))
 
 
+def _man(won) -> str:
+    return f"{won / 10000:.1f}만"
+
+
+def income_verdict(kind: str, cfg: dict):
+
+    기준은 건강보험 보수월액 합산(profile.health_pay_monthly_won) — 심사 조회 1순위 자료다.
+    원천징수 총급여는 조회 ⑤순위라 판정에 쓰지 않는다.
+    상한은 config의 income_limit_2p_dual(공고문에서 확인한 절대금액)에서 읽는다.
+    해당 유형이 없거나 공고마다 기준이 갈리면 None을 돌려 '분석 필요'로 남긴다."""
+    hp = (cfg.get("profile") or {}).get("health_pay_monthly_won") or {}
+    total = (hp.get("me") or 0) + (hp.get("spouse") or 0)
+    lim = cfg.get("income_limit_2p_dual") or {}
+    if not total or not lim:
+        return None
+    ours, solo = _man(total), max(hp.get("me") or 0, hp.get("spouse") or 0)
+
+    def cmp(cap, label):
+        ok = total <= cap
+        return f"{'✅' if ok else '❌'} 소득 {ours} {'≤' if ok else '>'} {_man(cap)} — {label}"
+
+    # ★ 판정 순서 주의. 청년안심 포털 게시판 공고는 house_kind에 '청년안심주택 포털'이
+    #   들어가서, [민간임대] 공고까지 청년안심(공공임대) 한도로 잘못 판정된다.
+    #   공공지원민간임대는 상한이 2인 120%(704.0만)로 공공임대보다 낮으므로 먼저 걸러낸다.
+    if "민간임대" in kind and lim.get("공공지원민간임대"):
+        tail = "" if total <= lim["공공지원민간임대"] else " 초과"
+        y1 = lim.get("청년_1인")
+        extra = f" / 청년 1인 {'가능' if (y1 and solo <= y1) else '불가'}" if y1 else ""
+        return cmp(lim["공공지원민간임대"], "민간임대 신혼" + tail + extra)
+    if "행복주택" in kind and lim.get("행복주택"):
+        # 초과여도 태아 포함 3인이 되면 기준이 3인 구간으로 올라가 통과한다(과천 공고문 가산표).
+        extra = "" if total <= lim["행복주택"] else " 초과 · 태아 포함 3인 되면 가능"
+        return cmp(lim["행복주택"], "행복주택 2인 맞벌이" + extra)
+    if "청년안심" in kind:
+        n2, n1 = lim.get("청년안심_신혼2"), lim.get("청년안심_신혼1")
+        y1 = lim.get("청년_1인")
+        parts = []
+        if n2:
+            parts.append(f"신혼Ⅱ {'가능' if total <= n2 else '불가'}(한도 {_man(n2)})")
+        if n1:
+            parts.append(f"신혼Ⅰ {'가능' if total <= n1 else '불가'}(한도 {_man(n1)})")
+        if y1:
+            parts.append(f"청년 각자 {'가능' if solo <= y1 else '불가'}(한도 {_man(y1)})")
+        mark = "✅" if (n2 and total <= n2) else "❌"
+        return f"{mark} 소득 {ours} — " + " / ".join(parts)
+    return None
+
+
 def build_tags(n: dict, cfg: dict) -> list[str]:
     tags = []
     region = (n.get("region") or "") + " " + (n.get("address") or "")
@@ -87,6 +135,8 @@ def build_tags(n: dict, cfg: dict) -> list[str]:
 
     is_hopetown = "신혼희망" in name
     if is_hopetown:
+        # 신희타 분양은 '3인 이하'를 한 구간으로 묶고 맞벌이 200% 구간이 따로 있어
+        tags.insert(0, "✅ 소득 — 신희타 분양은 '3인 이하' 구간 + 맞벌이 200%까지 열려 여유")
         tags.append("⚠ 신혼희망타운 — 수익공유형 모기지 의무 여부 공고문 확인")
 
     if cfg.get("mode") == "premarital":
@@ -182,6 +232,10 @@ def build_rental_tags(n: dict, cfg: dict) -> list[str]:
     elif "장기전세" in kind:
     if cfg.get("mode") == "premarital":
         tags.append("예비신혼부부 가능 여부·혼인신고 기한 공고문 확인")
+    # 소득 판정을 맨 앞에 — 카드를 열지 않고도 되는지/안 되는지 바로 보이게.
+    verdict = income_verdict(kind, cfg)
+    if verdict:
+        tags.insert(0, verdict)
     return tags
 
 
