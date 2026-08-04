@@ -70,18 +70,33 @@ def _keyword_ok(board: dict, title: str) -> bool:
 # 공고 본문에서 접수기간을 뽑기 위한 라벨/날짜 패턴.
 # 실제 표기 예: "■ 청약 접수일 : 2026. 08. 11.(화) 10:00 ~ 2026. 08. 13.(목) 17:00"
 _APPLY_LABELS = ("모집신청일", "접수일", "접수기간", "신청기간", "접수 기간", "청약접수",
-                 "청약 접수", "신청 접수", "접수일정", "인터넷접수", "인터넷 접수")
+                 "청약 접수", "신청 접수", "접수일정", "인터넷접수", "인터넷 접수",
+                 "청약신청", "청약 신청")  # 민간임대 공고는 '■청약신청 : ...' 표기
 # 접수기간이 아닌 다른 일정 라벨. 라벨과 첫 날짜 사이에 이 말이 끼면 그 창은 버린다.
 # (예전에 안내문 "※ 청약 접수 시작 시간과 마감 시간에는…" 뒤의 '서류심사대상자 발표
 #  2026.08.21 / 서류제출기간 08.31'을 접수기간으로 잡아 D-day가 10일씩 틀렸다)
 _NOT_APPLY = ("서류심사", "서류제출", "제출기간", "발표", "당첨", "계약", "입주지정", "소명", "추첨")
-_DATE_ANY = re.compile(r"20\d{2}\s*[.\-/년]\s*\d{1,2}\s*[.\-/월]\s*\d{1,2}")
+# 날짜 표기가 기관마다 다르다. 둘 다 인식한다.
+#   4자리 연도: "2026.08.11" / "2026. 08. 11."
+#   2자리 연도: "‘26. 08. 03."  ← 민간임대(사업자 작성) 공고에 흔함
+# 2자리 연도는 앞에 인용부호가 붙은 형태만 받는다. 그냥 \d{2}로 열면
+# 전화번호(02-6342-9300)·금액 등을 날짜로 오인한다.
+_DATE_ANY = re.compile(r"(?:20\d{2}|['‘’`]\s?\d{2})\s*[.\-/년]\s*\d{1,2}\s*[.\-/월]\s*\d{1,2}")
+# 기간의 끝이 연도·월 없이 "~ 08. 05." 로만 오는 표기(민간임대 공고에 흔함).
+# 시작일의 연도를 물려받아 채운다.
+_MD_ONLY = re.compile(r"~\s*(\d{1,2})\s*[.\-/월]\s*(\d{1,2})")
+# "‘26. 08. 03.(월) 10:00 ~ 16:00" 처럼 당일 안에서 끝나는 표기 → 마감일 = 시작일.
+# 시각(:)이 뒤따르므로 _MD_ONLY와 겹치지 않는다.
+_SAME_DAY = re.compile(r"~\s*\d{1,2}\s*:\s*\d{2}")
 
 
 def _iso_date(s: str):
     n = re.findall(r"\d+", s)
     try:
-        return f"{int(n[0]):04d}-{int(n[1]):02d}-{int(n[2]):02d}"
+        y = int(n[0])
+        if y < 100:            # ‘26 → 2026
+            y += 2000
+        return f"{y:04d}-{int(n[1]):02d}-{int(n[2]):02d}"
     except (IndexError, ValueError):
         return None
 
@@ -102,11 +117,30 @@ def _sh_apply_period(html: str):
                 continue
             if any(k in win[:dm.start()] for k in _NOT_APPLY):
                 continue  # 서류제출·발표 등 접수기간이 아닌 일정
+            # 첫 날짜 뒤에 다른 일정 라벨이 나오면 거기서 창을 끊는다.
+            #   "청약신청 : ‘26.08.03 ~ 08.05 ■서류심사 대상자 발표 : ‘26.08.07"
+            # 에서 발표일(08.07)을 접수 마감으로 잡던 버그를 막는다.
+            cut = len(win)
+            for k in _NOT_APPLY:
+                i = win.find(k, dm.end())
+                if i >= 0:
+                    cut = min(cut, i)
+            win = win[:cut]
             ds = [d for d in (_iso_date(x) for x in _DATE_ANY.findall(win)) if d]
             if not ds:
                 continue
             start = ds[0]
             end = next((d for d in ds[1:] if d >= start), None)  # 시작보다 빠른 날짜는 종료로 안 씀
+            if not end:
+                # "‘26. 08. 03.(월) 00:00 ~ 08. 05.(수) 23:00" 처럼 끝에 연도가 없는 표기
+                md = _MD_ONLY.search(win, dm.end())
+                if md:
+                    mm, dd = int(md.group(1)), int(md.group(2))
+                    cand = f"{start[:4]}-{mm:02d}-{dd:02d}"
+                    # 연말→연초로 넘어가는 기간(12.28 ~ 01.05)이면 연도를 +1
+                    end = cand if cand >= start else f"{int(start[:4]) + 1}-{mm:02d}-{dd:02d}"
+                elif _SAME_DAY.search(win, dm.end()):
+                    end = start  # 당일 접수
             if best is None or dm.start() < best[0]:
                 best = (dm.start(), start, end)
     return (best[1], best[2]) if best else (None, None)

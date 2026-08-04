@@ -45,7 +45,12 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 .cardbtns button:hover{border-color:var(--navy); color:var(--navy)}
 .mutebtn.on{border-color:#EAC5BC; color:var(--red); background:#FBF2F0}
 .card.muted{opacity:.42; padding:10px 16px}
-.card.muted .body>.name{white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:44px}
+/* 알림 끈 카드: 제목+메모를 한 줄에. 메모는 안 줄이고 제목만 …로 줄인다 */
+.card.muted .mutedrow{display:flex; align-items:center; gap:8px; min-width:0; padding-right:44px}
+.card.muted .mutedrow>.name{flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.card.muted .mutedrow>.memo,
+.card.muted .mutedrow>.memoedit{flex:0 0 auto; margin-top:0; max-width:55%;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
 .card.collapsed{padding:10px 16px}
 .card.collapsed .name{white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
 .memoic{cursor:help}
@@ -275,6 +280,12 @@ function judge(n){
     if(s && days(s) <= 0 && e && days(e) >= 0)
       return {k:'open', num: days(e)===0 ? '오늘' : 'D-'+days(e), lbl:'접수 마감까지'};
   }
+  // 접수 시작일은 지났는데 마감일을 못 읽은 경우. 마감으로 단정하면 진행 중인 공고가
+  // 마감 탭으로 사라진다(민간임대 공고에서 실제로 발생). 접수중으로 두고 확인을 유도.
+  for(const [a,b] of wins){
+    const s = pd(a);
+    if(s && days(s) <= 0 && !pd(b)) return {k:'open', num:'?', lbl:'마감일 확인'};
+  }
   let nearest = null;
   for(const [a,,name] of wins){
     const s = pd(a);
@@ -314,12 +325,12 @@ function card(n){
   const muteBtn = `<button class="mutebtn${n.muted?' on':''}" onclick="toggleMute('${n.id}')" title="${n.muted?'알림 켜기':'알림 끄기(관심 없음 → 1줄+흐리게)'}">${n.muted?'🔔':'🔕'}</button>`;
   const foldBtn = `<button class="foldbtn" onclick="toggleCollapse('${n.id}')" title="${n.collapsed?'펼치기':'접기(알림은 계속 옴)'}">${n.collapsed?'▾':'▸'}</button>`;
   const btns = `<div class="cardbtns">${n.muted?'':foldBtn}${muteBtn}</div>`;
-  // 알림 끈(관심 없는) 공고는 엄격히 1줄 + 흐리게. 메모는 📝 아이콘(툴팁)만.
+  // 알림 끈(관심 없는) 공고는 1줄 + 흐리게. 단 메모는 항상 온전히 보인다
+  // (예전엔 📝 아이콘 툴팁이라 안 보였음 — 사용자 요청). 자리가 부족하면 제목을 …로 줄인다.
   if(n.muted){
-    const memoIc = n.memo ? ` <span class="memoic" title="${esc(n.memo)}">📝</span>` : '';
     return `<div class="card muted" data-k="${j.k}" data-nid="${esc(n.id)}">
       <div class="body">${btns}
-        <div class="name">${nm}${memoIc}</div>
+        <div class="mutedrow"><span class="name">${nm}</span>${memo}</div>
       </div>
     </div>`;
   }

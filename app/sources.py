@@ -242,7 +242,7 @@ def fetch_lh(service_key: str) -> list[dict]:
                     continue  # 신혼희망타운 행복주택은 fetch_lh_lease가 담당
                 seen.add(pan_id)
                 url = _get(it, "DTL_URL")
-                det = _lh_detail(url)  # 접수기간·소재지(API에 없음)
+                det = _lh_detail_cached(url)  # 접수기간·소재지(API에 없음)
                 out.append({
                     "id": f"lh:{pan_id}",
                     "source": "lh",
@@ -275,6 +275,28 @@ def _lh_dslist(body) -> list:
     elif isinstance(body, dict):
         return body.get("dsList", [])
     return []
+
+
+_LH_DETAIL_CACHE: dict[str, tuple[datetime, dict]] = {}
+LH_DETAIL_TTL_HOURS = 6
+
+
+def _lh_detail_cached(url) -> dict:
+    """_lh_detail 결과를 URL(=공고ID)별로 캐시.
+
+    수집 1회에 분양·임대 합쳐 40여 건의 상세페이지를 받느라 refresh가 30초를 넘겨
+    프록시 타임아웃(500/502)이 났다. 상세는 접수기간·소재지라 매 주기 다시 볼 이유가 없다.
+    수집이 60분 주기이므로 TTL 6시간이면 재조회가 1/6로 줄고 일정 변경도 반나절 안에 반영된다.
+    (정정공고는 PAN_ID가 달라 URL도 바뀌므로 캐시가 오답을 주지 않는다.
+     같은 PAN_ID의 상세가 조용히 수정되는 경우만 TTL로 흡수한다)"""
+    if not url:
+        return {}
+    hit = _LH_DETAIL_CACHE.get(url)
+    if hit and (datetime.now() - hit[0]) < timedelta(hours=LH_DETAIL_TTL_HOURS):
+        return hit[1]
+    det = _lh_detail(url)
+    _LH_DETAIL_CACHE[url] = (datetime.now(), det)
+    return det
 
 
 def _lh_detail(url) -> dict:
@@ -349,7 +371,7 @@ def fetch_lh_lease(service_key: str, types=None) -> list[dict]:
                 seen.add(pan_id)
                 pan_nm = _get(it, "PAN_NM", default="(이름 없음)")
                 url = _get(it, "DTL_URL")
-                det = _lh_detail(url)  # 소재지·전용면적(통근 계산에 필요)
+                det = _lh_detail_cached(url)  # 소재지·전용면적·접수기간(통근·D-day에 필요)
                 it = {**it, "area_text": det.get("area_text")}
                 out.append({
                     "id": f"lh_rent:{pan_id}",
