@@ -38,7 +38,10 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 .tabs button:focus-visible{outline:2px solid var(--navy); outline-offset:2px}
 
 .card{position:relative; display:flex; gap:14px; background:var(--card); border:1px solid var(--line);
-  border-radius:10px; padding:16px; margin-bottom:10px}
+  border-radius:10px; padding:16px; margin-bottom:10px;
+  /* 접기/알림끄기 때 흐려짐·여백이 튀지 않게. 높이는 swapCard()가 애니메이션 */
+  transition:opacity .2s ease, padding .2s ease}
+@media (prefers-reduced-motion: reduce){ .card{transition:none} }
 .cardbtns{position:absolute; top:10px; right:10px; z-index:1; display:flex; gap:4px}
 .cardbtns button{font:inherit; font-size:12px; padding:2px 7px; border:1px solid var(--line);
   border-radius:6px; background:#fff; color:var(--muted); cursor:pointer; white-space:nowrap}
@@ -562,7 +565,7 @@ async function askNotice(id){
 /* 메모 인라인 편집 */
 function editMemo(id){
   const n = NOTICES.find(x=>x.id===id); if(!n) return;
-  n._editMemo = true; render();
+  n._editMemo = true; swapCard(id);   // 메모 편집도 카드 하나만 교체(전체 깜빡임 방지)
   const e = document.getElementById('memoedit'+id);
   if(e){ e.focus(); e.setSelectionRange(e.value.length, e.value.length); }
 }
@@ -570,30 +573,51 @@ async function saveMemo(id, text){
   const n = NOTICES.find(x=>x.id===id); if(!n || !n._editMemo) return;  // Enter 후 blur 중복 방지
   n._editMemo = false;
   text = (text||'').trim();
-  if(text === (n.memo||'')){ render(); return; }
-  n.memo = text; render();                              // 낙관적 갱신
+  if(text === (n.memo||'')){ swapCard(id); return; }
+  n.memo = text; swapCard(id);                          // 낙관적 갱신
   try{
     await fetch('/api/memo',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({id, text})});
   }catch(e){ /* 실패 시 다음 목록 갱신 때 되돌아옴 */ }
 }
+/* 카드 하나만 교체하고 높이를 애니메이션한다.
+   render()는 #list 전체를 다시 그려서(LLM 박스·메모까지 재생성) 접기/알림끄기 때
+   화면이 깜빡이고 스크롤이 튄다 — 사용자 지적. 대상 카드만 갈아끼우면 나머지는
+   DOM이 그대로 남아 깜빡임이 없다. 필터 때문에 카드가 사라져야 하면 전체 갱신. */
+const cssEsc = s => (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&');
+function swapCard(id){
+  const el = $(`#list .card[data-nid="${cssEsc(id)}"]`);
+  const n = NOTICES.find(x => x.id === id);
+  if(!el || !n){ render(); return; }
+  const h0 = el.offsetHeight;
+  const box = document.createElement('div');
+  box.innerHTML = card(n);
+  const next = box.firstElementChild;
+  el.replaceWith(next);
+  const h1 = next.offsetHeight;
+  if(h0 === h1 || !next.animate) return;
+  const done = () => { next.style.overflow = ''; };
+  next.style.overflow = 'hidden';
+  next.animate([{height: h0 + 'px'}, {height: h1 + 'px'}],
+               {duration: 200, easing: 'cubic-bezier(.4,0,.2,1)'}).finished.then(done, done);
+}
 async function toggleMute(id){
   const n = NOTICES.find(x=>x.id===id); if(!n) return;
   const next = !n.muted;
-  n.muted = next; render();                 // 낙관적 갱신(즉시 접기/펼치기)
+  n.muted = next; swapCard(id);              // 낙관적 갱신(즉시 접기/펼치기)
   try{
     await fetch('/api/mute',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({id, muted: next})});
-  }catch(e){ n.muted = !next; render(); }    // 실패 시 롤백
+  }catch(e){ n.muted = !next; swapCard(id); } // 실패 시 롤백
 }
 async function toggleCollapse(id){
   const n = NOTICES.find(x=>x.id===id); if(!n) return;
   const next = !n.collapsed;
-  n.collapsed = next; render();              // 낙관적 갱신(즉시 1줄/펼침)
+  n.collapsed = next; swapCard(id);           // 낙관적 갱신(즉시 1줄/펼침)
   try{
     await fetch('/api/collapse',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({id, collapsed: next})});
-  }catch(e){ n.collapsed = !next; render(); }  // 실패 시 롤백
+  }catch(e){ n.collapsed = !next; swapCard(id); }  // 실패 시 롤백
 }
 
 /* 값 필터용: 공고의 최대 전용면적(평형별 units → 분양 area_hi → 임대 대표 area_m2) */
