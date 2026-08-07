@@ -285,9 +285,11 @@ function judge(n){
   }
   // 접수 시작일은 지났는데 마감일을 못 읽은 경우. 마감으로 단정하면 진행 중인 공고가
   // 마감 탭으로 사라진다(민간임대 공고에서 실제로 발생). 접수중으로 두고 확인을 유도.
+  // 단 무기한 열어두면 끝난 공고가 목록을 가린다(6월 공고가 8월에 접수중으로 뜸).
+  // 민간임대 추가모집은 대개 1~5일 접수라 2주까지만 열어두고 이후는 마감으로 넘긴다.
   for(const [a,b] of wins){
     const s = pd(a);
-    if(s && days(s) <= 0 && !pd(b)) return {k:'open', num:'?', lbl:'마감일 확인'};
+    if(s && days(s) <= 0 && days(s) > -14 && !pd(b)) return {k:'open', num:'?', lbl:'마감일 확인'};
   }
   let nearest = null;
   for(const [a,,name] of wins){
