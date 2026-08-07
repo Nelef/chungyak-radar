@@ -64,7 +64,13 @@ def _norm_date(s: str):
 
 def _keyword_ok(board: dict, title: str) -> bool:
     kws = board.get("keywords")
-    return (not kws) or any(kw in title for kw in kws)
+    if not kws:
+        return True
+    # 공백을 없애고 비교한다. 공고 제목의 띄어쓰기가 제각각이라 그대로 비교하면 샌다.
+    # 예: '2026년 재개발임대주택 일반모집 공고'는 키워드 '모집공고'와 매칭되지 않아
+    #     3,421세대 공고가 통째로 누락됐다(2026-08 사용자 지적).
+    flat = re.sub(r"\s+", "", title)
+    return any(re.sub(r"\s+", "", kw) in flat for kw in kws)
 
 
 # 공고 본문에서 접수기간을 뽑기 위한 라벨/날짜 패턴.
@@ -146,17 +152,29 @@ def _sh_apply_period(html: str):
     return (best[1], best[2]) if best else (None, None)
 
 
+# 분양 게시판에 섞여 오는 임대 공고를 가려내는 표식.
+# '토지임대부 분양주택'에도 '임대'가 들어가므로 두 글자 '임대'로는 못 가른다.
+_RENT_HINTS = ("청년안심", "공공임대", "민간임대", "장기전세", "행복주택",
+               "국민임대", "전세임대", "매입임대", "임차인 모집")
+
+
 def _notice(board: dict, uid: str, title: str, link: str, posted, address="서울") -> dict:
+    # board에 sale: true를 주면 분양 게시판으로 본다(SH 주택분양 m_244 등).
+    # 임대와 달리 청약통장을 쓰고 재당첨 제한이 걸리므로 rules.py가 태그를 갈라 붙인다.
+    # 단 분양 게시판에도 임대 공고가 섞여 올라온다(청년안심주택·성동스페이스 등).
+    # 제목에 임대 유형이 보이면 분양 플래그를 붙이지 않는다 — 안 그러면 임대 공고에
+    # '청약통장 사용·재당첨 제한' 태그가 붙어 정반대 안내가 나간다.
+    sale = bool(board.get("sale")) and not any(k in title for k in _RENT_HINTS)
     return {
         "id": f"board:{uid}",
         "source": "board",
         "name": title,
-        "house_kind": f"임대 공고 ({board['name']})",
+        "house_kind": f"{'분양' if sale else '임대'} 공고 ({board['name']})",
         "region": "서울",
         "address": address,
         "notice_date": posted,
         "url": link,
-        "flags": {"임대": True},
+        "flags": {"분양": True} if sale else {"임대": True},
         "raw": {"board": board["name"]},
     }
 
@@ -330,4 +348,16 @@ def fetch_boards(boards: list[dict] | None = None) -> list[dict]:
             notices += got
         except Exception as e:  # noqa: BLE001
             log.error("%s 수집 실패: %s", board["name"], e)
+    # 같은 글이 여러 게시판에 걸쳐 올라온다(SH 주택임대 m_247 / 주택분양 m_244).
+    # id가 seq 기준이라 그대로 두면 나중 것이 앞의 것을 덮어쓴다.
+    # config에 임대 게시판을 먼저 두었으므로 먼저 온 것을 남긴다.
+    seen, uniq = set(), []
+    for n in notices:
+        if n["id"] in seen:
+            continue
+        seen.add(n["id"])
+        uniq.append(n)
+    if len(uniq) != len(notices):
+        log.info("게시판 중복 %d건 제거", len(notices) - len(uniq))
+    notices = uniq
     return notices

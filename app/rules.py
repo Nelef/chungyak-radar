@@ -170,7 +170,14 @@ def process(notices: list[dict]) -> list[dict]:
             name = n.get("name") or ""
             noise = any(kw in name for kw in cfg.get("board_exclude_keywords", []))
             n["matched"] = not excluded(n, cfg) and not noise
-            n["tags"] = build_rental_tags(n, cfg) if n["matched"] else []
+            if not n["matched"]:
+                n["tags"] = []
+            elif (n.get("flags") or {}).get("분양"):
+                # SH 주택분양 게시판(m_244) — 토지임대부·공공분양 등. 임대 태그를 붙이면
+                # '청약통장·재당첨 제한 무관'이라는 정반대 안내가 나가므로 분양 태그를 쓴다.
+                n["tags"] = build_tags(n, cfg)
+            else:
+                n["tags"] = build_rental_tags(n, cfg)
             continue  # 주소가 불확실해 통근 계산은 생략 (신청기간은 buttons로 분석)
         if n.get("source") in ("lh_rent", "gh"):  # LH임대·GH — 지역 대신 통근 1시간 이내만 남김
             n["tags"] = build_rental_tags(n, cfg)
