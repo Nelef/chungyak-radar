@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+from urllib.parse import parse_qs, urlparse
 
 import requests
 
@@ -571,6 +572,32 @@ def _fetch_lh_rent_pdf(notice):
     return _fetch_lh_pdf(n)
 
 
+def _fetch_lh_pdf_by_url(notice):
+    """LH 상세(selectWrtancInfo)에서 공고문 PDF bytes. panId 등은 공고 url 쿼리에 들어있어
+    이름검색(_fetch_lh_pdf)보다 정확하다. 없으면 None."""
+    q = parse_qs(urlparse(notice.get("url") or "").query)
+    pan = (q.get("panId") or [""])[0]
+    if not pan:
+        return None
+    params = {"panId": pan, "mi": (q.get("mi") or ["1027"])[0]}
+    for k in ("ccrCnntSysDsCd", "uppAisTpCd", "aisTpCd"):
+        if q.get(k):
+            params[k] = q[k][0]
+    r = requests.get(LH_INFO, params=params, headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    fid = None
+    for fm in re.finditer(r"fileDownLoad\('(\d+)'\)[^>]*>(.*?)</a>", r.text, re.S):
+        fnm = re.sub(r"<[^>]+>", "", fm.group(2))
+        if ".pdf" in fnm.lower() and ("공고문" in fnm or "모집공고" in fnm):
+            fid = fm.group(1)
+            break
+    if not fid:
+        return None
+    fr = requests.get(LH_FILE, params={"fileid": fid}, headers=HEADERS, timeout=90)
+    fr.raise_for_status()
+    return fr.content if fr.content[:4] == b"%PDF" else None
+
+
 def _build_public_rent(notice, min_area=0, profile=None, on_event=None):
     """LH임대·GH 공고 — 접수기간은 목록에 있고, 공고문 PDF에서 보증금/월세/평형을 뽑는다."""
     t = {"kind": "rent", "apply_start": notice.get("r1_start"), "apply_end": notice.get("r1_end")}
@@ -852,6 +879,77 @@ def _build(notice, regulated, ccfg, profile=None, remndr=False, on_event=None):
     }
 
 
+def _lh_sale_prompt(profile):
+    return _sale_prompt(profile, remndr=False) + (
+        " 추가 키(공급금액/주택가격 표에서 뽑아라): "
+        "price_lo_manwon(주택형별 최저 공급금액을 '만원' 정수로 환산 — 예: 766,370천원=7억6,637만원이면 76637), "
+        "price_hi_manwon(최고 공급금액 '만원' 정수), area_lo(최소 전용면적 ㎡), area_hi(최대 전용면적 ㎡)."
+    )
+
+
+def _f1(v):
+    try:
+        return round(float(v), 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_lh_sale(notice, ccfg, profile=None, on_event=None):
+    """LH 공공분양·신혼희망타운(source=lh) — 청약홈 가격 API에 없어 공고문 PDF에서
+    LLM이 공급금액·계약금/중도금/잔금·납부일정·자격조언을 추출해 필요현금을 계산한다.
+    평형별 세대수는 LH가 가격 API를 안 줘서 비운다(요약·납부일정·조언 위주)."""
+    s = llm_settings()
+    if not s.get("provider"):
+        return None
+    _emit(on_event, phase="📄 LH 공고문 PDF 다운로드 중…")
+    try:
+        pdf = _fetch_lh_pdf_by_url(notice) or _fetch_lh_pdf(notice)
+    except LLMDownError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        log.warning("LH 공고문 PDF 실패(%s): %s", notice.get("name"), e)
+        pdf = None
+    if not pdf:
+        return None
+    terms = _llm_terms(pdf, s, _lh_sale_prompt(profile), SALE_KEYWORDS, on_event) or {}
+    lo = _int(terms.get("price_lo_manwon"))
+    if not lo:
+        return None
+    hi = _int(terms.get("price_hi_manwon")) or lo
+    hopetown = "신혼희망" in (notice.get("name") or "")
+    flags = notice.get("flags") or {}
+    regulated = bool(flags.get("투기과열") or flags.get("조정대상"))
+    if hopetown:
+        ltv = float(ccfg.get("hopetown_ltv") or 70)
+        cap = float(ccfg.get("hopetown_loan_cap_manwon") or 0)
+    else:
+        ltv = float(ccfg["ltv_regulated"] if regulated else ccfg["ltv_normal"])
+        cap = float(ccfg.get("loan_cap_manwon") or 0)
+    loan = lo * ltv / 100
+    cap_hit = bool(cap and loan > cap)
+    if cap_hit:
+        loan = cap
+    equity = lo - loan
+    c_pct = float(terms.get("contract_pct") or 0)
+    self_pct = float(terms.get("interim_self_pay_pct") or 0)
+    hl = float(ccfg.get("highlight_under_manwon") or 0)
+    sched = terms.get("schedule")
+    sched = [x for x in sched if isinstance(x, dict)] if isinstance(sched, list) else []
+    return {
+        "kind": "sale", "units": [],
+        "price_lo": lo, "price_hi": hi,
+        "area_lo": _f1(terms.get("area_lo")),
+        "area_hi": _f1(terms.get("area_hi")) or _f1(terms.get("area_lo")),
+        "contract_pct": c_pct, "interim_self_pct": self_pct,
+        "entry_cash": lo * (c_pct + self_pct) / 100,
+        "loan": loan, "equity": equity, "ltv_pct": ltv, "cap_hit": cap_hit,
+        "regulated": bool(regulated), "hopetown": hopetown, "remndr": False,
+        "highlight": bool(hl and equity < hl), "estimated": False,
+        "schedule": sched,
+        "rank_advice": terms.get("rank_advice", ""), "note": terms.get("note", ""),
+    }
+
+
 def enrich(notice, cfg, force=False, on_event=None):
     """공고 1건 온디맨드 LLM 분석(캐시). 분양=필요현금+순위조언 / 임대=신청기간+임대료.
     force=True면 캐시 무시하고 다시 분석. 반환: 통합 dict(kind 포함) 또는 None.
@@ -884,6 +982,8 @@ def enrich(notice, cfg, force=False, on_event=None):
             regulated = bool(flags.get("투기과열") or flags.get("조정대상"))
             result = _build(notice, regulated, ccfg, (cfg or {}).get("profile"),
                             remndr=(src == "applyhome_remndr"), on_event=_intercept)
+        elif src == "lh":  # LH 공공분양·신혼희망타운(청약홈 API에 없어 공고문 PDF로 분석)
+            result = _build_lh_sale(notice, ccfg, (cfg or {}).get("profile"), _intercept)
         else:
             profile = (cfg or {}).get("profile")
             if src == "board":
