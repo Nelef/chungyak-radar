@@ -177,15 +177,17 @@ def api_logout(request: Request):
 
 
 def _strip_personal(r: dict):
-    """게스트 응답에서 개인 소득이 담긴 부분 제거: AI 자격조언(rank_advice)과 Q&A.
-    필요현금·분양가·납부일정·공고 소득기준(income_limit) 등 공개 정보는 그대로 둔다."""
+    """게스트 응답에서 가구의 개인 소득/자격 판정을 제거한다.
+    - AI 자격조언(rank_advice)·Q&A: 프로필 소득을 참조 → 제거
+    공고 자체 공개정보(필요현금·분양가·납부일정·공고 소득기준 income_limit·지역순위)는 유지."""
     def clean(res):
         if isinstance(res, dict):
             res.pop("rank_advice", None)
     clean(r.get("llm"))
     for h in (r.get("llm_history") or []):
         clean(h.get("r"))
-    r["qa"] = []   # Q&A 답변도 프로필 소득을 참조하므로 게스트에겐 숨김
+    r["qa"] = []
+    r["tags"] = [t for t in (r.get("tags") or []) if ("소득" not in t and "맞벌이" not in t)]
 
 
 @app.get("/api/notices")
