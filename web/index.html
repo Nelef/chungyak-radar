@@ -736,7 +736,7 @@ async function loadStatus(){
   TODAY = new Date(s.today+'T00:00:00');
   $('#syncInfo').textContent = s.last_sync ? `마지막 동기화 ${s.last_sync.slice(5,16)} · ${s.last_sync_counts||''}` : '아직 동기화 전';
   const pills = [];
-  pills.push(`<span class="pill">${s.mode==='premarital'?'혼인신고 전 모드':'기혼 모드'}</span>`);
+  if(s.mode) pills.push(`<span class="pill">${s.mode==='premarital'?'혼인신고 전 모드':'기혼 모드'}</span>`);
   pills.push(`<span class="pill ${s.telegram_configured?'ok':'warn'}">텔레그램 ${s.telegram_configured?'연결됨':'미설정'}</span>`);
   pills.push(`<span class="pill ${s.applyhome_key?'ok':'warn'}">청약홈 키 ${s.applyhome_key?'OK':'없음'}</span>`);
   pills.push(`<span class="pill ${s.lh_key?'ok':'warn'}">LH 키 ${s.lh_key?'OK':'없음'}</span>`);

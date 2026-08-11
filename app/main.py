@@ -187,7 +187,9 @@ def _strip_personal(r: dict):
     for h in (r.get("llm_history") or []):
         clean(h.get("r"))
     r["qa"] = []
-    r["tags"] = [t for t in (r.get("tags") or []) if ("소득" not in t and "맞벌이" not in t)]
+    # 가구 상황이 박힌 태그 제거: 소득 판정(소득/맞벌이) + 혼인상태(혼인/예비신혼/기혼).
+    _hide = ("소득", "맞벌이", "혼인", "예비신혼", "기혼")
+    r["tags"] = [t for t in (r.get("tags") or []) if not any(w in t for w in _hide)]
 
 
 @app.get("/api/notices")
@@ -200,12 +202,12 @@ def api_notices(request: Request, all: bool = False):
 
 
 @app.get("/api/status")
-def api_status():
+def api_status(request: Request):
     cfg = rules.load_config()
     return {
         "last_sync": db.get_meta("last_sync"),
         "last_sync_counts": db.get_meta("last_sync_counts"),
-        "mode": cfg.get("mode"),
+        "mode": cfg.get("mode") if _authed(request) else None,  # 혼인상태는 게스트에 숨김
         "poll_interval_minutes": cfg.get("poll_interval_minutes"),
         "mock": os.environ.get("MOCK") == "1",
         "telegram_configured": bool(os.environ.get("TELEGRAM_BOT_TOKEN")),
