@@ -37,9 +37,8 @@ body{background:var(--bg); color:var(--ink);
 /* 게스트(읽기 전용): 쓰기 컨트롤 숨김 (서버에서도 차단됨) */
 body.guest .adminonly,
 body.guest .analyze,
-body.guest .askbox,
-body.guest .memo,
-body.guest .memoedit{display:none !important}
+body.guest .askbox{display:none !important}
+body.guest .memo{cursor:default}   /* 게스트: 메모는 보이되 편집 불가(렌더에서 onclick 제거) */
 
 header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:space-between; gap:12px}
 .brand{font-family:'Nanum Myeongjo',serif; font-weight:800; font-size:26px; letter-spacing:-.5px}
@@ -148,6 +147,22 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 .llm.hot{background:#FFF7E6; border-color:#E7C766}
 .llm.err{background:#FDECEC; border-color:#E7A0A0; color:#8A1C1C}
 .llm.err b{color:#8A1C1C}
+/* AI 분석 면 — 날짜·분양가 같은 결정론적 데이터와 구분되는 '판단' 표면.
+   시그니처: 좌측 잉크→틸 레일 + 명조체 아이브로우(작은 다이아 마크). 나머지는 조용히. */
+.llm.ai{position:relative; background:#F6F9FC; border:1px solid #D3DEEC; padding-left:16px}
+.llm.ai::before{content:""; position:absolute; left:0; top:9px; bottom:9px; width:3px;
+  border-radius:3px; background:linear-gradient(180deg, var(--navy), #2F8F76)}
+.llm.ai .aihead{display:flex; align-items:center; gap:7px; margin:0 0 8px;
+  padding-bottom:7px; border-bottom:1px solid #E4EBF3}
+.llm.ai .aihead .mark{width:12px; height:12px; flex:0 0 12px; transform:rotate(45deg);
+  border-radius:3px; background:linear-gradient(135deg, var(--navy), #2F8F76)}
+.llm.ai .aihead .lbl{font-family:'Nanum Myeongjo',serif; font-weight:800; font-size:12.5px;
+  letter-spacing:.4px; color:var(--navy)}
+.llm.ai .aihead .sub{font-size:11px; color:var(--muted); margin-top:1px}
+.llm.ai.hot{background:#FFFDF6; border-color:#E7C766}
+.llm.ai.hot::before{background:linear-gradient(180deg, #C8902A, #E7C766)}
+.llm.ai.hot .aihead .mark{background:linear-gradient(135deg, #C8902A, #E7C766)}
+.llm.ai.hot .aihead .lbl{color:#8A6A00}
 .llm.stream .stphase{font-size:12px; color:var(--navy); font-weight:600}
 .llm.stream details{margin-top:6px}
 .llm.stream summary{cursor:pointer; font-size:12px; color:var(--muted)}
@@ -360,12 +375,14 @@ function esc(s){ return String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&
 function card(n){
   const j = judge(n);
   const nm = n.url ? `<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.name)}</a>` : esc(n.name);
-  // 메모 — 타이틀 아래 항상 표시. 클릭하면 인라인 편집.
-  const memo = n._editMemo
-    ? `<input class="memoedit" id="memoedit${n.id}" value="${esc(n.memo||'')}" placeholder="메모 입력 후 Enter"
-        onkeydown="if(event.key==='Enter')saveMemo('${n.id}', this.value)"
-        onblur="saveMemo('${n.id}', this.value)">`
-    : `<div class="memo${n.memo?'':' empty'}" onclick="editMemo('${n.id}')" title="클릭해서 메모 편집">📝 ${n.memo?esc(n.memo):'메모 추가…'}</div>`;
+  // 메모 — 타이틀 아래 항상 표시. 클릭하면 인라인 편집. 게스트는 읽기 전용(있을 때만 표시).
+  const memo = GUEST
+    ? (n.memo ? `<div class="memo">📝 ${esc(n.memo)}</div>` : '')
+    : (n._editMemo
+        ? `<input class="memoedit" id="memoedit${n.id}" value="${esc(n.memo||'')}" placeholder="메모 입력 후 Enter"
+            onkeydown="if(event.key==='Enter')saveMemo('${n.id}', this.value)"
+            onblur="saveMemo('${n.id}', this.value)">`
+        : `<div class="memo${n.memo?'':' empty'}" onclick="editMemo('${n.id}')" title="클릭해서 메모 편집">📝 ${n.memo?esc(n.memo):'메모 추가…'}</div>`);
   const muteBtn = `<button class="mutebtn${n.muted?' on':''}" onclick="toggleMute('${n.id}')" title="${n.muted?'알림 켜기':'알림 끄기(관심 없음 → 1줄+흐리게)'}">${n.muted?'🔔':'🔕'}</button>`;
   const foldBtn = `<button class="foldbtn" onclick="toggleCollapse('${n.id}')" title="${n.collapsed?'펼치기':'접기(알림은 계속 옴)'}">${n.collapsed?'▾':'▸'}</button>`;
   const btns = `<div class="cardbtns">${n.muted?'':foldBtn}${muteBtn}</div>`;
@@ -493,7 +510,9 @@ function llmHtml(n){
     </div>` : '';
   if(!L) return errBanner + `<div class="llm">${pager}<span class="muted">분석함 · 정보를 못 찾음</span><div class="llmfoot">${again}</div></div>${qaHtml(n)}`;
   const hot = (idx===0 && L.highlight) ? ' hot' : '';
-  return errBanner + `<div class="llm${hot}">${pager}${llmBox(L)}<div class="llmfoot">${again}</div></div>${qaHtml(n)}`;
+  const sub = L.kind==='rent' ? '공고문 기반 임대조건' : (L.estimated ? '공고문 기반 · 일부 가정' : '공고문 기반 추정');
+  const aihead = `<div class="aihead"><span class="mark"></span><b class="lbl">AI 분석</b><span class="sub">· ${sub}</span></div>`;
+  return errBanner + `<div class="llm ai${hot}">${aihead}${pager}${llmBox(L)}<div class="llmfoot">${again}</div></div>${qaHtml(n)}`;
 }
 function histNav(id, delta){
   const n = NOTICES.find(x=>x.id===id); if(!n) return;
