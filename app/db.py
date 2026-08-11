@@ -2,6 +2,7 @@
 import json
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 
@@ -62,6 +63,10 @@ CREATE TABLE IF NOT EXISTS pdf_texts (
 CREATE TABLE IF NOT EXISTS collapsed_notices (
     notice_id TEXT PRIMARY KEY,          -- 접기(알림은 계속 발송, 대시보드만 1줄 표시)
     at        TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    token  TEXT PRIMARY KEY,             -- 대시보드 로그인 세션(재배포에도 유지되도록 DB에 저장)
+    expiry REAL NOT NULL                 -- 만료 epoch(초)
 );
 """
 
@@ -324,3 +329,24 @@ def get_pdf_text(nid: str):
 def is_muted(nid: str) -> bool:
     with conn() as c:
         return c.execute("SELECT 1 FROM muted_notices WHERE notice_id = ?", (nid,)).fetchone() is not None
+
+
+# ── 로그인 세션(재배포에도 유지) ────────────────────────────────
+def session_add(token: str, expiry: float):
+    with conn() as c:
+        c.execute("INSERT OR REPLACE INTO sessions (token, expiry) VALUES (?, ?)", (token, expiry))
+
+
+def session_valid(token: str) -> bool:
+    if not token:
+        return False
+    now = time.time()
+    with conn() as c:
+        c.execute("DELETE FROM sessions WHERE expiry < ?", (now,))  # 만료 정리
+        row = c.execute("SELECT expiry FROM sessions WHERE token = ?", (token,)).fetchone()
+    return bool(row and row["expiry"] > now)
+
+
+def session_del(token: str):
+    with conn() as c:
+        c.execute("DELETE FROM sessions WHERE token = ?", (token,))

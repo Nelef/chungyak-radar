@@ -107,8 +107,8 @@ def index():
 # 서버에서 강제한다(버튼만 숨기면 API 직접 호출로 우회 가능). 비번은 deploy.env의
 # DASHBOARD_PASSWORD. 미설정이면 게이트 비활성(전원 전체 권한 — 하위호환).
 _DASH_PW = os.environ.get("DASHBOARD_PASSWORD", "").strip()
-_SESSIONS: dict = {}          # token -> expiry(epoch)
-_LOGIN_FAILS: dict = {}       # ip -> [fail timestamps]
+# 세션은 DB(sessions 테이블, /data 볼륨)에 저장 → 재배포·재시작에도 로그인 유지.
+_LOGIN_FAILS: dict = {}       # ip -> [fail timestamps] (재시작 시 리셋되어도 무해)
 _SESSION_TTL = 30 * 86400
 _MAX_FAILS, _FAIL_WINDOW = 5, 600   # 무차별 대입 방지: 10분에 5회 실패 시 잠금
 
@@ -123,14 +123,7 @@ def _client_ip(request: Request) -> str:
 def _authed(request: Request) -> bool:
     if not _DASH_PW:            # 비번 미설정 = 게이트 없음(전원 허용)
         return True
-    tok = request.cookies.get("cr_session", "")
-    exp = _SESSIONS.get(tok)
-    if not exp:
-        return False
-    if exp < time.time():
-        _SESSIONS.pop(tok, None)
-        return False
-    return True
+    return db.session_valid(request.cookies.get("cr_session", ""))
 
 
 def _forbid():
@@ -162,7 +155,7 @@ def api_login(request: Request, payload: dict = Body(...)):
     if secrets.compare_digest(pw, _DASH_PW):
         _LOGIN_FAILS.pop(ip, None)
         tok = secrets.token_urlsafe(32)
-        _SESSIONS[tok] = now + _SESSION_TTL
+        db.session_add(tok, now + _SESSION_TTL)
         resp = JSONResponse({"ok": True})
         resp.set_cookie("cr_session", tok, max_age=_SESSION_TTL,
                         httponly=True, samesite="lax", secure=True, path="/")
@@ -177,7 +170,7 @@ def api_login(request: Request, payload: dict = Body(...)):
 
 @app.post("/api/logout")
 def api_logout(request: Request):
-    _SESSIONS.pop(request.cookies.get("cr_session", ""), None)
+    db.session_del(request.cookies.get("cr_session", ""))
     resp = JSONResponse({"ok": True})
     resp.delete_cookie("cr_session", path="/")
     return resp
