@@ -59,6 +59,7 @@ def run_collection() -> dict:
     db.set_meta("last_sync", db.now_kst())
     db.set_meta("last_sync_counts", f"{len(processed)}건 수집 / {total_matched}건 매칭 / 신규 {new_matched}건")
     log.info("수집 완료: %d건, 매칭 %d건, 신규 %d건", len(processed), total_matched, new_matched)
+    _enqueue_backfill()   # 새 공고/미분석 공고를 자동 분석 큐에 적재(직렬 처리)
     return {"collected": len(processed), "matched": total_matched, "new": new_matched}
 
 
@@ -87,6 +88,7 @@ async def lifespan(_: FastAPI):
                   next_run_time=datetime.now(KST) + timedelta(seconds=5))
     sched.add_job(run_reminders, "cron", hour=8, minute=30)  # 매일 아침 8:30 리마인더
     sched.start()
+    threading.Thread(target=_auto_worker, daemon=True).start()  # 자동 분석 직렬 워커
     log.info("스케줄러 시작 (수집 주기 %d분, 리마인더 08:30)", cfg["poll_interval_minutes"])
     yield
     sched.shutdown(wait=False)
@@ -181,9 +183,25 @@ def api_logout(request: Request):
     return resp
 
 
+def _strip_personal(r: dict):
+    """게스트 응답에서 개인 소득이 담긴 부분 제거: AI 자격조언(rank_advice)과 Q&A.
+    필요현금·분양가·납부일정·공고 소득기준(income_limit) 등 공개 정보는 그대로 둔다."""
+    def clean(res):
+        if isinstance(res, dict):
+            res.pop("rank_advice", None)
+    clean(r.get("llm"))
+    for h in (r.get("llm_history") or []):
+        clean(h.get("r"))
+    r["qa"] = []   # Q&A 답변도 프로필 소득을 참조하므로 게스트에겐 숨김
+
+
 @app.get("/api/notices")
-def api_notices(all: bool = False):
-    return db.list_notices(matched_only=not all)
+def api_notices(request: Request, all: bool = False):
+    rows = db.list_notices(matched_only=not all)
+    if not _authed(request):          # 게스트: 개인 소득 노출 방지
+        for r in rows:
+            _strip_personal(r)
+    return rows
 
 
 @app.get("/api/status")
@@ -335,34 +353,77 @@ _ENRICH_JOBS: dict = {}          # nid -> {"phase","done","error","started"}
 _ENRICH_LOCK = threading.Lock()
 
 
-def _start_enrich_job(notice, force) -> bool:
+def _do_enrich(notice, force=False) -> bool:
+    """분석 1건 실행(잡 등록 + cost.enrich + 상태 갱신). 이미 진행 중이면 스킵.
+    _start_enrich_job(버튼)과 자동 큐 워커가 공유한다."""
     nid = notice["id"]
     with _ENRICH_LOCK:
         job = _ENRICH_JOBS.get(nid)
         if job and not job["done"]:
-            return True  # 이미 서버에서 진행 중 → 중복 실행 방지
-        # 오래된 완료 잡 정리(메모리)
-        for k in [k for k, j in _ENRICH_JOBS.items() if j["done"]]:
+            return False  # 이미 진행 중 → 중복 실행 방지
+        for k in [k for k, j in _ENRICH_JOBS.items() if j["done"]]:  # 완료 잡 정리(메모리)
             _ENRICH_JOBS.pop(k, None)
         _ENRICH_JOBS[nid] = {"phase": "분석 대기 중…", "done": False, "error": None,
                              "started": db.now_kst()}
-
-    def work():
-        try:
-            def on_ev(ev):
-                if isinstance(ev, dict) and ev.get("phase"):
-                    _ENRICH_JOBS[nid]["phase"] = ev["phase"]
-            result = cost.enrich(notice, rules.load_config(), force, on_event=on_ev)
-            if isinstance(result, dict) and result.get("error"):
-                _ENRICH_JOBS[nid]["error"] = result["error"]  # LLM 서버 죽음 등(캐시 안 됨)
-        except Exception as e:  # noqa: BLE001
-            log.warning("%s 백그라운드 분석 실패: %s", notice.get("name"), e)
-            _ENRICH_JOBS[nid]["error"] = str(e)[:200]
-        finally:
-            _ENRICH_JOBS[nid]["done"] = True
-
-    threading.Thread(target=work, daemon=True).start()
+    try:
+        def on_ev(ev):
+            if isinstance(ev, dict) and ev.get("phase"):
+                _ENRICH_JOBS[nid]["phase"] = ev["phase"]
+        result = cost.enrich(notice, rules.load_config(), force, on_event=on_ev)
+        if isinstance(result, dict) and result.get("error"):
+            _ENRICH_JOBS[nid]["error"] = result["error"]  # LLM 서버 죽음 등(캐시 안 됨 → 재시도됨)
+    except Exception as e:  # noqa: BLE001
+        log.warning("%s 분석 실패: %s", notice.get("name"), e)
+        _ENRICH_JOBS[nid]["error"] = str(e)[:200]
+    finally:
+        _ENRICH_JOBS[nid]["done"] = True
     return True
+
+
+def _start_enrich_job(notice, force) -> bool:
+    """버튼용: 데몬 스레드로 즉시 실행(응답성)."""
+    threading.Thread(target=_do_enrich, args=(notice, force), daemon=True).start()
+    return True
+
+
+# ── 자동 분석: 새 공고/미분석 공고를 서버에서 순차 분석(LLM 실행 안 된 게 없도록) ──
+# 한 번에 다 돌리면 LLM 서버(Kimi/gemma4)에 부담 → 워커 1개로 직렬 처리.
+# 실패(LLM 다운 등)는 캐시되지 않으므로 다음 수집 때 다시 큐에 올라가 재시도된다.
+_AUTO_Q: "queue.Queue" = queue.Queue()
+_AUTO_QUEUED: set = set()
+
+
+def _auto_worker():
+    while True:
+        nid = _AUTO_Q.get()
+        _AUTO_QUEUED.discard(nid)
+        try:
+            if cost._cache_get(nid) != "miss":   # 이미 분석됨(성공/정보없음) → 스킵
+                continue
+            n = db.get_notice(nid)
+            if n:
+                _do_enrich(n, force=False)
+        except Exception as e:  # noqa: BLE001
+            log.warning("자동 분석 실패(%s): %s", nid, e)
+
+
+def _enqueue_backfill():
+    """분석 이력이 없는 matched 공고(신규 포함)를 자동 분석 큐에 적재. LLM 미설정이면 건너뜀."""
+    try:
+        if not cost.llm_settings().get("provider"):
+            return
+        n_added = 0
+        for r in db.list_notices(matched_only=True):
+            nid = r["id"]
+            if r.get("enriched") or nid in _AUTO_QUEUED:   # enriched = 분석 캐시 있음
+                continue
+            _AUTO_QUEUED.add(nid)
+            _AUTO_Q.put(nid)
+            n_added += 1
+        if n_added:
+            log.info("자동 분석 큐 적재: %d건", n_added)
+    except Exception as e:  # noqa: BLE001
+        log.warning("자동 분석 큐 적재 실패: %s", e)
 
 
 @app.post("/api/enrich")
@@ -383,8 +444,11 @@ def api_enrich(request: Request, payload: dict = Body(...)):
 
 
 @app.get("/api/enrich-status")
-def api_enrich_status(id: str):
-    """백그라운드 분석 진행/완료 상태. 완료면 결과(llm)+히스토리를 함께 반환."""
+def api_enrich_status(request: Request, id: str):
+    """백그라운드 분석 진행/완료 상태. 완료면 결과(llm)+히스토리를 함께 반환.
+    결과에 개인 소득이 담긴 자격조언이 있어 전체 권한 전용(게스트는 분석 자체를 못 함)."""
+    if not _authed(request):
+        return _forbid()
     job = _ENRICH_JOBS.get(id)
     if job and not job["done"]:
         return {"running": True, "done": False, "phase": job.get("phase")}
