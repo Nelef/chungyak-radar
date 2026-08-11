@@ -228,21 +228,82 @@ def _ask_sse(notice, question):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+# ── 서버 백그라운드 분석 잡 ──────────────────────────────────────
+# 버튼을 누르면 데몬 스레드로 분석을 시작하고 즉시 반환한다. 브라우저를 닫거나
+# 이동해도 서버가 끝까지 돌려 결과를 캐시하고, 대시보드는 /api/enrich-status를
+# 폴링해 완료 시 카드를 자동 갱신한다. 같은 공고 중복 실행은 막는다.
+_ENRICH_JOBS: dict = {}          # nid -> {"phase","done","error","started"}
+_ENRICH_LOCK = threading.Lock()
+
+
+def _start_enrich_job(notice, force) -> bool:
+    nid = notice["id"]
+    with _ENRICH_LOCK:
+        job = _ENRICH_JOBS.get(nid)
+        if job and not job["done"]:
+            return True  # 이미 서버에서 진행 중 → 중복 실행 방지
+        # 오래된 완료 잡 정리(메모리)
+        for k in [k for k, j in _ENRICH_JOBS.items() if j["done"]]:
+            _ENRICH_JOBS.pop(k, None)
+        _ENRICH_JOBS[nid] = {"phase": "분석 대기 중…", "done": False, "error": None,
+                             "started": db.now_kst()}
+
+    def work():
+        try:
+            def on_ev(ev):
+                if isinstance(ev, dict) and ev.get("phase"):
+                    _ENRICH_JOBS[nid]["phase"] = ev["phase"]
+            result = cost.enrich(notice, rules.load_config(), force, on_event=on_ev)
+            if isinstance(result, dict) and result.get("error"):
+                _ENRICH_JOBS[nid]["error"] = result["error"]  # LLM 서버 죽음 등(캐시 안 됨)
+        except Exception as e:  # noqa: BLE001
+            log.warning("%s 백그라운드 분석 실패: %s", notice.get("name"), e)
+            _ENRICH_JOBS[nid]["error"] = str(e)[:200]
+        finally:
+            _ENRICH_JOBS[nid]["done"] = True
+
+    threading.Thread(target=work, daemon=True).start()
+    return True
+
+
 @app.post("/api/enrich")
 def api_enrich(payload: dict = Body(...)):
-    """공고 1건 온디맨드 LLM 분석 (분양=필요현금+순위조언 / 임대=신청기간+임대료).
-    stream=true면 SSE로 진행 상황·LLM 사고/출력을 실시간 중계한다."""
+    """공고 1건 LLM 분석. 기본은 서버 백그라운드 잡으로 시작하고 즉시 반환한다
+    (브라우저 닫아도 서버가 끝까지 실행·캐시 → 대시보드가 폴링해 자동 반영).
+    stream=true면 기존 SSE 실시간 중계도 지원한다."""
     nid = (payload or {}).get("id")
     n = db.get_notice(nid) if nid else None
     if not n:
         return JSONResponse({"error": "not found"}, status_code=404)
     if (payload or {}).get("stream"):
         return _enrich_sse(n, bool((payload or {}).get("force")))
-    result = cost.enrich(n, rules.load_config(), bool((payload or {}).get("force")))
-    if isinstance(result, dict) and result.get("error"):
-        # LLM 서버 죽음 등: 분석 완료로 표시하지 않음(공고 유지 + 재시도 가능)
-        return {"enriched": False, "llm": None, "error": result["error"]}
-    return {"enriched": True, "llm": result, "llm_history": cost.cache_history(nid)}
+    _start_enrich_job(n, bool((payload or {}).get("force")))
+    return {"started": True, "running": True}
+
+
+@app.get("/api/enrich-status")
+def api_enrich_status(id: str):
+    """백그라운드 분석 진행/완료 상태. 완료면 결과(llm)+히스토리를 함께 반환."""
+    job = _ENRICH_JOBS.get(id)
+    if job and not job["done"]:
+        return {"running": True, "done": False, "phase": job.get("phase")}
+    if job and job["done"] and job.get("error"):
+        return {"running": False, "done": True, "error": job["error"]}
+    cached = cost._cache_get(id)   # dict / None(실패) / "miss"
+    if job and job["done"]:
+        return {"running": False, "done": True,
+                "llm": None if cached == "miss" else cached,
+                "llm_history": cost.cache_history(id)}
+    if cached != "miss":           # 이전에 이미 분석됨
+        return {"running": False, "done": True, "llm": cached,
+                "llm_history": cost.cache_history(id)}
+    return {"running": False, "done": False}
+
+
+@app.get("/api/enrich-jobs")
+def api_enrich_jobs():
+    """서버에서 진행 중인 분석 공고 id 목록(대시보드 재접속 시 진행표시 복원용)."""
+    return {"running": [nid for nid, j in _ENRICH_JOBS.items() if not j["done"]]}
 
 
 def _enrich_sse(notice, force):

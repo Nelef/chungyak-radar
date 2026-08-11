@@ -428,9 +428,8 @@ function llmBox(L){
 /* 분석 중 실시간 패널 — SSE 이벤트가 id(stphase/stthink/stout + 공고id)로 직접 갱신 */
 function streamHtml(n){
   return `<div class="llm stream">
-    <div class="stphase" id="stphase${n.id}">연결 중…</div>
-    <details open><summary>💭 생각 과정 (실시간)</summary><pre class="thinkbody" id="stthink${n.id}"></pre></details>
-    <pre id="stout${n.id}"></pre>
+    <div class="stphase">${esc(n._phase || '분석 중…')}</div>
+    <div class="muted" style="margin-top:4px">서버에서 진행 중 — 탭을 닫거나 이동해도 계속되고, 끝나면 자동으로 표시됩니다.</div>
   </div>`;
 }
 function llmHtml(n){
@@ -480,37 +479,31 @@ function unitsHtml(L){
 }
 async function enrichNotice(id, force){
   const n = NOTICES.find(x=>x.id===id); if(!n) return;
-  n._loading = true; n._llmError = null; render();
-  const el = k => document.getElementById(k + id);
-  const append = (e, t) => { if(e){ e.textContent += t; e.scrollTop = e.scrollHeight; } };
+  n._loading = true; n._llmError = null; n._phase = '분석 시작 중…'; render();
+  try{  // 서버 백그라운드 잡 시작 → 즉시 반환(브라우저 닫아도 서버가 끝까지 실행)
+    await fetch('/api/enrich',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id, force: !!force})});
+  }catch(e){ n._llmError = 'network'; n._loading = false; render(); return; }
+  startPoll(id);
+}
+/* 백그라운드 분석 완료를 폴링해 카드를 자동 갱신 (id별 폴러 1개만 유지) */
+const POLLING = new Set();
+function startPoll(id){ if(!POLLING.has(id)){ POLLING.add(id); pollEnrich(id); } }
+async function pollEnrich(id){
+  const n = NOTICES.find(x=>x.id===id);
+  if(!n || !n._loading){ POLLING.delete(id); return; }
   try{
-    const res = await fetch('/api/enrich',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({id, force: !!force, stream: true})});
-    if(!res.ok || !res.body) throw new Error('bad response');
-    const reader = res.body.getReader(), dec = new TextDecoder();
-    let buf = '';
-    for(;;){                                   // SSE 수동 파싱(POST라 EventSource 불가)
-      const {value, done} = await reader.read();
-      if(done) break;
-      buf += dec.decode(value, {stream:true});
-      let i;
-      while((i = buf.indexOf('\n\n')) >= 0){
-        const raw = buf.slice(0, i); buf = buf.slice(i+2);
-        const line = raw.split('\n').find(l => l.startsWith('data:'));
-        if(!line) continue;
-        let ev; try{ ev = JSON.parse(line.slice(5)); }catch{ continue; }
-        if(ev.phase){ const e = el('stphase'); if(e) e.textContent = ev.phase; }
-        else if(ev.thinking) append(el('stthink'), ev.thinking);
-        else if(ev.content) append(el('stout'), ev.content);
-        else if(ev.error){ n._llmError = ev.error; }
-        else if('done' in ev){
-          n.enriched = true; n.llm = ev.llm || null; n._hidx = 0;  // 새 분석 → 최신 결과로
-          if(ev.llm_history) n.llm_history = ev.llm_history;
-        }
-      }
+    const s = await (await fetch('/api/enrich-status?id=' + encodeURIComponent(id))).json();
+    if(s.done){
+      if(s.error){ n._llmError = s.error; }
+      else { n.enriched = true; n.llm = s.llm || null; n._hidx = 0;
+             if(s.llm_history) n.llm_history = s.llm_history; }
+      n._loading = false; POLLING.delete(id); render(); return;
     }
-  }catch(e){ n._llmError = 'network'; }  // 우리 서버조차 응답 없음
-  n._loading = false; render();
+    if(s.phase) n._phase = s.phase;
+    render();
+  }catch(e){ /* 네트워크 순단은 무시하고 계속 폴링 */ }
+  setTimeout(() => pollEnrich(id), 2500);
 }
 /* 추가질문(Q&A) 영역 — 분석된 공고에만 표시 */
 function qaHtml(n){
@@ -686,6 +679,15 @@ async function loadStatus(){
 async function loadNotices(){
   NOTICES = await (await fetch('/api/notices')).json();
   render();
+  try{  // 서버에서 진행 중인 분석이 있으면 진행표시 복원 + 폴링 재개(재접속·주기갱신 대비)
+    const jobs = await (await fetch('/api/enrich-jobs')).json();
+    let any = false;
+    for(const id of (jobs.running || [])){
+      const n = NOTICES.find(x=>x.id===id);
+      if(n && !n.enriched){ n._loading = true; n._phase = n._phase || '분석 중…'; startPoll(id); any = true; }
+    }
+    if(any) render();
+  }catch(e){}
 }
 
 /* 알림(텔레그램) 링크의 #id=… 로 들어오면 해당 공고 카드로 스크롤+강조 */
