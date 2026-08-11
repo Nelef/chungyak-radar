@@ -6,7 +6,9 @@ import json
 import logging
 import os
 import queue
+import secrets
 import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 
@@ -19,7 +21,7 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import Body, FastAPI
+from fastapi import Body, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app import commute, cost, db, notify, rules, sources
@@ -98,6 +100,87 @@ def index():
     return FileResponse(os.path.join(WEB_DIR, "index.html"))
 
 
+# ── 로그인 게이트 ────────────────────────────────────────────────
+# 비밀번호(전체 권한) 또는 게스트(읽기 전용) 선택. 게스트 쓰기 차단은 반드시
+# 서버에서 강제한다(버튼만 숨기면 API 직접 호출로 우회 가능). 비번은 deploy.env의
+# DASHBOARD_PASSWORD. 미설정이면 게이트 비활성(전원 전체 권한 — 하위호환).
+_DASH_PW = os.environ.get("DASHBOARD_PASSWORD", "").strip()
+_SESSIONS: dict = {}          # token -> expiry(epoch)
+_LOGIN_FAILS: dict = {}       # ip -> [fail timestamps]
+_SESSION_TTL = 30 * 86400
+_MAX_FAILS, _FAIL_WINDOW = 5, 600   # 무차별 대입 방지: 10분에 5회 실패 시 잠금
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "?"
+
+
+def _authed(request: Request) -> bool:
+    if not _DASH_PW:            # 비번 미설정 = 게이트 없음(전원 허용)
+        return True
+    tok = request.cookies.get("cr_session", "")
+    exp = _SESSIONS.get(tok)
+    if not exp:
+        return False
+    if exp < time.time():
+        _SESSIONS.pop(tok, None)
+        return False
+    return True
+
+
+def _forbid():
+    return JSONResponse({"error": "forbidden",
+                         "detail": "로그인이 필요합니다 (게스트는 읽기 전용)."}, status_code=403)
+
+
+@app.get("/api/whoami")
+def api_whoami(request: Request):
+    """현재 세션 권한. 대시보드가 게이트를 띄울지 판단."""
+    return {"authed": _authed(request), "gated": bool(_DASH_PW)}
+
+
+@app.post("/api/login")
+def api_login(request: Request, payload: dict = Body(...)):
+    """비밀번호 로그인. IP별 실패 횟수 제한으로 무차별 대입 차단."""
+    if not _DASH_PW:
+        return {"ok": True}
+    ip = _client_ip(request)
+    now = time.time()
+    fails = [t for t in _LOGIN_FAILS.get(ip, []) if now - t < _FAIL_WINDOW]
+    if len(fails) >= _MAX_FAILS:
+        wait = int(_FAIL_WINDOW - (now - fails[0]))
+        _LOGIN_FAILS[ip] = fails
+        return JSONResponse({"ok": False, "locked": True, "retry_after": wait,
+                             "error": f"시도 횟수 초과 — 약 {wait // 60 + 1}분 후 다시 시도하세요."},
+                            status_code=429)
+    pw = str((payload or {}).get("password", ""))
+    if secrets.compare_digest(pw, _DASH_PW):
+        _LOGIN_FAILS.pop(ip, None)
+        tok = secrets.token_urlsafe(32)
+        _SESSIONS[tok] = now + _SESSION_TTL
+        resp = JSONResponse({"ok": True})
+        resp.set_cookie("cr_session", tok, max_age=_SESSION_TTL,
+                        httponly=True, samesite="lax", secure=True, path="/")
+        return resp
+    fails.append(now)
+    _LOGIN_FAILS[ip] = fails
+    left = _MAX_FAILS - len(fails)
+    return JSONResponse({"ok": False, "remaining": max(left, 0),
+                         "error": f"비밀번호가 틀렸습니다. (남은 시도 {max(left, 0)}회)"},
+                        status_code=401)
+
+
+@app.post("/api/logout")
+def api_logout(request: Request):
+    _SESSIONS.pop(request.cookies.get("cr_session", ""), None)
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie("cr_session", path="/")
+    return resp
+
+
 @app.get("/api/notices")
 def api_notices(all: bool = False):
     return db.list_notices(matched_only=not all)
@@ -120,19 +203,25 @@ def api_status():
 
 
 @app.post("/api/refresh")
-def api_refresh():
+def api_refresh(request: Request):
+    if not _authed(request):
+        return _forbid()
     return run_collection()
 
 
 @app.post("/api/test-telegram")
-def api_test_telegram():
+def api_test_telegram(request: Request):
+    if not _authed(request):
+        return _forbid()
     ok = notify.send_telegram("✅ 청약 레이더 테스트 메시지입니다. 알림 연결 정상!")
     return JSONResponse({"sent": ok})
 
 
 @app.get("/api/settings")
-def api_get_settings():
-    """LLM 설정 조회. 비번/키는 노출하지 않고 설정 여부만."""
+def api_get_settings(request: Request):
+    """LLM 설정 조회. 비번/키는 노출하지 않고 설정 여부만. (전체 권한 전용)"""
+    if not _authed(request):
+        return _forbid()
     s = cost.llm_settings()
     return {
         "provider": s["provider"], "base_url": s["base_url"], "model": s["model"],
@@ -142,15 +231,19 @@ def api_get_settings():
 
 
 @app.post("/api/settings")
-def api_save_settings(payload: dict = Body(...)):
+def api_save_settings(request: Request, payload: dict = Body(...)):
     """대시보드에서 LLM 설정 저장(DB 영속). 비번/키는 빈값이면 기존 유지."""
+    if not _authed(request):
+        return _forbid()
     cost.save_llm_settings(payload or {})
     return {"saved": True}
 
 
 @app.post("/api/mute")
-def api_mute(payload: dict = Body(...)):
+def api_mute(request: Request, payload: dict = Body(...)):
     """알림 끄기/켜기(관심 없음). 끄면 알림 발송 제외 + 대시보드 접힘."""
+    if not _authed(request):
+        return _forbid()
     nid = (payload or {}).get("id")
     if not nid:
         return JSONResponse({"error": "no id"}, status_code=400)
@@ -160,8 +253,10 @@ def api_mute(payload: dict = Body(...)):
 
 
 @app.post("/api/memo")
-def api_memo(payload: dict = Body(...)):
+def api_memo(request: Request, payload: dict = Body(...)):
     """공고 메모 저장(빈 문자열이면 삭제)."""
+    if not _authed(request):
+        return _forbid()
     nid = (payload or {}).get("id")
     if not nid:
         return JSONResponse({"error": "no id"}, status_code=400)
@@ -170,8 +265,10 @@ def api_memo(payload: dict = Body(...)):
 
 
 @app.post("/api/collapse")
-def api_collapse(payload: dict = Body(...)):
+def api_collapse(request: Request, payload: dict = Body(...)):
     """접기/펼치기. 알림은 계속 오고 대시보드만 1줄로 표시."""
+    if not _authed(request):
+        return _forbid()
     nid = (payload or {}).get("id")
     if not nid:
         return JSONResponse({"error": "no id"}, status_code=400)
@@ -181,8 +278,10 @@ def api_collapse(payload: dict = Body(...)):
 
 
 @app.post("/api/ask")
-def api_ask(payload: dict = Body(...)):
+def api_ask(request: Request, payload: dict = Body(...)):
     """분석된 공고에 추가질문. stream=true면 SSE로 사고/답변을 실시간 중계."""
+    if not _authed(request):
+        return _forbid()
     nid = (payload or {}).get("id")
     question = ((payload or {}).get("question") or "").strip()
     n = db.get_notice(nid) if nid else None
@@ -267,10 +366,12 @@ def _start_enrich_job(notice, force) -> bool:
 
 
 @app.post("/api/enrich")
-def api_enrich(payload: dict = Body(...)):
+def api_enrich(request: Request, payload: dict = Body(...)):
     """공고 1건 LLM 분석. 기본은 서버 백그라운드 잡으로 시작하고 즉시 반환한다
     (브라우저 닫아도 서버가 끝까지 실행·캐시 → 대시보드가 폴링해 자동 반영).
     stream=true면 기존 SSE 실시간 중계도 지원한다."""
+    if not _authed(request):  # 게스트는 분석(DB 캐시 기록) 불가
+        return _forbid()
     nid = (payload or {}).get("id")
     n = db.get_notice(nid) if nid else None
     if not n:

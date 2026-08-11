@@ -16,6 +16,31 @@ body{background:var(--bg); color:var(--ink);
   font-size:15px; line-height:1.55; -webkit-font-smoothing:antialiased}
 .wrap{max-width:760px; margin:0 auto; padding:0 16px 80px}
 
+/* 로그인 게이트 */
+.gate{display:none; position:fixed; inset:0; z-index:1000; background:rgba(23,35,59,.55);
+  align-items:center; justify-content:center; padding:20px}
+.gatebox{background:var(--card); border:1px solid var(--line); border-radius:14px;
+  padding:28px 24px; width:100%; max-width:340px; box-shadow:0 12px 40px rgba(0,0,0,.2); text-align:center}
+.gatebrand{font-family:'Nanum Myeongjo',serif; font-weight:800; font-size:24px; letter-spacing:-.5px}
+.gatebrand em{font-style:normal; color:var(--red)}
+.gatemsg{font-size:13px; color:var(--muted); margin:8px 0 16px}
+.gatebox input{width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px;
+  font:inherit; font-size:15px; background:#fff; color:var(--ink)}
+.gatebtn{width:100%; margin-top:10px; padding:10px; border:0; border-radius:8px; cursor:pointer;
+  font:inherit; font-size:14px; font-weight:600; background:var(--navy); color:#fff}
+.gatebtn.ghost{background:#fff; color:var(--navy); border:1px solid var(--line); font-weight:500}
+.gateerr{min-height:18px; margin-top:8px; font-size:12px; color:var(--red)}
+.gatediv{display:flex; align-items:center; gap:10px; margin:14px 0 2px; color:var(--muted); font-size:12px}
+.gatediv::before,.gatediv::after{content:""; flex:1; height:1px; background:var(--line)}
+#guestBadge{font-size:12px; color:var(--muted)}
+#guestBadge a{color:var(--navy)}
+/* 게스트(읽기 전용): 쓰기 컨트롤 숨김 (서버에서도 차단됨) */
+body.guest .adminonly,
+body.guest .analyze,
+body.guest .askbox,
+body.guest .memo,
+body.guest .memoedit{display:none !important}
+
 header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:space-between; gap:12px}
 .brand{font-family:'Nanum Myeongjo',serif; font-weight:800; font-size:26px; letter-spacing:-.5px}
 .brand em{font-style:normal; color:var(--red)}
@@ -188,13 +213,26 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 </style>
 </head>
 <body>
+<div id="gate" class="gate">
+  <div class="gatebox">
+    <div class="gatebrand">청약 <em>레이더</em></div>
+    <p class="gatemsg">비밀번호를 입력하거나 게스트로 둘러보세요.</p>
+    <input id="gatePw" type="password" placeholder="비밀번호" autocomplete="current-password"
+           onkeydown="if(event.key==='Enter')submitLogin()">
+    <button id="gateLogin" class="gatebtn" onclick="submitLogin()">로그인</button>
+    <div id="gateErr" class="gateerr"></div>
+    <div class="gatediv"><span>또는</span></div>
+    <button class="gatebtn ghost" onclick="enterGuest()">👀 GUEST로 구경 (읽기 전용)</button>
+  </div>
+</div>
 <div class="wrap">
   <header>
     <div class="brand">청약 <em>레이더</em></div>
     <div class="sync">
       <span id="syncInfo">동기화 대기 중</span>
-      <button id="settingsBtn" type="button" title="공고문 분석 LLM 설정">⚙ LLM</button>
-      <button id="refreshBtn" type="button">지금 수집</button>
+      <span id="guestBadge" style="display:none">👀 게스트 · <a href="#" onclick="loginPrompt();return false">로그인</a></span>
+      <button id="settingsBtn" class="adminonly" type="button" title="공고문 분석 LLM 설정">⚙ LLM</button>
+      <button id="refreshBtn" class="adminonly" type="button">지금 수집</button>
     </div>
   </header>
 
@@ -257,6 +295,7 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 
 <script>
 let NOTICES = [], FILTER = 'active', CAT = 'all', SORT = 'deadline', TODAY = new Date();
+let GUEST = false;   // 게스트(읽기 전용) 모드 — 서버에서도 쓰기 차단됨
 // 값 필터(면적·필요현금) — 각각 켜기/끄기 + 값 조정, 동시 적용. localStorage에 저장.
 // 전용 30㎡ 이하(원룸급)는 분석되면 제외 — 기본 켜짐. 미분석은 값을 몰라 통과.
 let AREA_ON = true, AREA_VAL = 30, CASH_ON = false, CASH_VAL = 20000; // CASH_VAL은 만원
@@ -604,6 +643,7 @@ async function toggleMute(id){
   const n = NOTICES.find(x=>x.id===id); if(!n) return;
   const next = !n.muted;
   n.muted = next; swapCard(id);              // 낙관적 갱신(즉시 접기/펼치기)
+  if(GUEST) return;                          // 게스트: 화면만 토글(DB 저장 안 함, 새로고침 시 원복)
   try{
     await fetch('/api/mute',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({id, muted: next})});
@@ -613,6 +653,7 @@ async function toggleCollapse(id){
   const n = NOTICES.find(x=>x.id===id); if(!n) return;
   const next = !n.collapsed;
   n.collapsed = next; swapCard(id);           // 낙관적 갱신(즉시 1줄/펼침)
+  if(GUEST) return;                           // 게스트: 화면만 토글(DB 저장 안 함)
   try{
     await fetch('/api/collapse',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({id, collapsed: next})});
@@ -799,7 +840,42 @@ $('#setSave').addEventListener('click', async ()=>{
   loadSettings();
 });
 
-loadStatus().then(loadNotices).then(focusFromHash);
+/* ── 로그인 게이트 ─────────────────────────────────────────── */
+function startApp(guest){
+  GUEST = guest;
+  document.body.classList.toggle('guest', guest);
+  document.getElementById('gate').style.display = 'none';
+  document.getElementById('guestBadge').style.display = guest ? '' : 'none';
+  loadStatus().then(loadNotices).then(focusFromHash);
+}
+function showGate(){
+  document.getElementById('gate').style.display = 'flex';
+  const pw = document.getElementById('gatePw'); if(pw){ pw.value=''; pw.focus(); }
+}
+async function submitLogin(){
+  const err = document.getElementById('gateErr');
+  const btn = document.getElementById('gateLogin');
+  err.textContent = '확인 중…'; btn.disabled = true;
+  try{
+    const r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({password: document.getElementById('gatePw').value})});
+    const j = await r.json();
+    if(j.ok){ localStorage.removeItem('cr_guest'); err.textContent=''; startApp(false); return; }
+    err.textContent = j.error || '로그인 실패';
+  }catch(e){ err.textContent = '서버 오류'; }
+  finally{ btn.disabled = false; }
+}
+function enterGuest(){ localStorage.setItem('cr_guest','1'); startApp(true); }
+function loginPrompt(){ localStorage.removeItem('cr_guest'); showGate(); }
+async function boot(){
+  let authed = false, gated = true;
+  try{ const w = await (await fetch('/api/whoami')).json(); authed = w.authed; gated = w.gated; }
+  catch(e){ authed = true; gated = false; }              // whoami 실패 시 앱은 뜨게(읽기)
+  if(!gated || authed) return startApp(false);            // 게이트 없음 or 이미 로그인 → 전체
+  if(localStorage.getItem('cr_guest') === '1') return startApp(true);  // 게스트 기억
+  showGate();
+}
+boot();
 setInterval(()=>{ loadStatus(); loadNotices(); }, 5*60*1000);
 </script>
 </body>
