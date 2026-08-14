@@ -950,6 +950,65 @@ def _build_lh_sale(notice, ccfg, profile=None, on_event=None):
     }
 
 
+# ------------------------------------ 중기청 기관추천(중소기업 장기근속) 신청기간
+MSS_PROMPT = (
+    "아래는 중소기업 장기근속자 주택 우선공급(기관추천) 안내문이다. JSON 객체 하나만 출력(설명 없이). "
+    "키: apply_start(기관추천 '신청 접수' 시작일 YYYY-MM-DD), apply_end(신청 접수 마감일 YYYY-MM-DD), "
+    "chungyak_date(청약홈 특별공급 접수예정일 YYYY-MM-DD, 없으면 ''), "
+    "tentative(일정이 '예정'이면 true), note(한 줄 특이사항 — 배정 세대수·모집공고 예정일 등).\n\n---안내문---\n"
+)
+
+
+def _fetch_mss_text(notice):
+    """중기청 게시글 본문 + 첨부 PDF 텍스트(신청기간 추출용)."""
+    import io as _io
+    from pypdf import PdfReader
+
+    url = notice.get("url") or ""
+    r = requests.get(url, headers=HEADERS, timeout=25, verify=False)
+    r.raise_for_status()
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", r.text))
+    for d in [x.replace("&amp;", "&")
+              for x in re.findall(r'href="(/common/board/Download\.do\?[^"]+)"', r.text)][:6]:
+        try:
+            fr = requests.get("https://www.mss.go.kr" + d, headers=HEADERS, timeout=40, verify=False)
+            if fr.content[:4] == b"%PDF":
+                for pg in PdfReader(_io.BytesIO(fr.content)).pages:
+                    text += " " + (pg.extract_text() or "")
+        except Exception:  # noqa: BLE001
+            continue
+    return text[:14000]
+
+
+def _build_mss(notice, on_event=None):
+    """중기청 기관추천 안내문에서 '신청 접수기간'을 LLM으로 뽑는다(형식이 제각각이라 정규식 불가).
+    apply_start/end로 대시보드 D-day가 붙는다(judge가 board는 L.apply_start를 씀)."""
+    s = llm_settings()
+    if not s.get("provider"):
+        return None
+    _emit(on_event, phase="📄 중기청 안내문 다운로드 중…")
+    try:
+        text = _fetch_mss_text(notice)
+    except LLMDownError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        log.warning("중기청 안내문 실패(%s): %s", notice.get("name"), e)
+        return None
+    if not text:
+        return None
+    r = _llm_json(MSS_PROMPT + text, s, on_event) or {}
+    if not (r.get("apply_start") or r.get("chungyak_date")):
+        return None
+    return {
+        "kind": "mss",
+        "apply_start": r.get("apply_start") or "",
+        "apply_end": r.get("apply_end") or "",
+        "chungyak_date": r.get("chungyak_date") or "",
+        "tentative": bool(r.get("tentative")),
+        "note": r.get("note") or "",
+    }
+
+
 def enrich(notice, cfg, force=False, on_event=None):
     """공고 1건 온디맨드 LLM 분석(캐시). 분양=필요현금+순위조언 / 임대=신청기간+임대료.
     force=True면 캐시 무시하고 다시 분석. 반환: 통합 dict(kind 포함) 또는 None.
@@ -987,7 +1046,10 @@ def enrich(notice, cfg, force=False, on_event=None):
         else:
             profile = (cfg or {}).get("profile")
             if src == "board":
-                result = _build_rent(notice, min_area, profile, _intercept)
+                if str(nid).startswith("board:mss:"):   # 중기청 기관추천 — 신청기간만 추출
+                    result = _build_mss(notice, _intercept)
+                else:
+                    result = _build_rent(notice, min_area, profile, _intercept)
             elif src == "applyhome_rent":
                 result = _build_applyhome_rent(notice, min_area, profile, _intercept)
             elif src in ("lh_rent", "gh"):

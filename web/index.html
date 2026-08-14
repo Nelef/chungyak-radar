@@ -455,6 +455,14 @@ function scheduleHtml(L){
 }
 /* LLM 결과 1건의 본문(임대/분양) */
 function llmBox(L){
+  if(L.kind==='mss'){   // 중기청 기관추천 — 신청 접수기간
+    const t = L.tentative ? ' <span class="muted">(예정)</span>' : '';
+    let inner = `<b>🏢 기관추천 신청</b> ${L.apply_start?(fr(L.apply_start,L.apply_end)||esc(whenFmt(L.apply_start)))+t:'안내문 확인'}`;
+    if(L.chungyak_date) inner += `<div class="muted">청약홈 특공 접수(예정) ${esc(whenFmt(L.chungyak_date))}</div>`;
+    inner += `<div class="muted">※ 회사→중기청 추천 신청 창구. 실제 청약은 청약홈에서 별도.</div>`;
+    if(L.note) inner += `<div class="muted">${esc(L.note)}</div>`;
+    return inner;
+  }
   if(L.kind==='rent'){
     const p=[]; if(L.deposit_manwon)p.push('보증금 '+money(L.deposit_manwon));
     if(L.monthly_manwon)p.push('월 '+L.monthly_manwon+'만'); if(L.area_m2)p.push('전용 '+L.area_m2+'㎡');
@@ -514,7 +522,7 @@ function llmHtml(n){
     </div>` : '';
   if(!L) return errBanner + `<div class="llm">${pager}<span class="muted">분석함 · 정보를 못 찾음</span><div class="llmfoot">${again}</div></div>${qaHtml(n)}`;
   const hot = (idx===0 && L.highlight) ? ' hot' : '';
-  const sub = L.kind==='rent' ? '공고문 기반 임대조건' : (L.estimated ? '공고문 기반 · 일부 가정' : '공고문 기반 추정');
+  const sub = L.kind==='mss' ? '중기청 안내문 기반' : L.kind==='rent' ? '공고문 기반 임대조건' : (L.estimated ? '공고문 기반 · 일부 가정' : '공고문 기반 추정');
   const aihead = `<div class="aihead"><span class="mark"></span><b class="lbl">AI 분석</b><span class="sub">· ${sub}</span></div>`;
   return errBanner + `<div class="llm ai${hot}">${aihead}${pager}${llmBox(L)}<div class="llmfoot">${again}</div></div>${qaHtml(n)}`;
 }
