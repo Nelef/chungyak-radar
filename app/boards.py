@@ -296,9 +296,39 @@ def _scrape_anchor_board(board: dict) -> list[dict]:
     return out
 
 
+# ------------------------------- 중소벤처기업부(서울청) 주택특별공급 게시판
+def _scrape_mss_board(board: dict) -> list[dict]:
+    """중기부 서울청 '주택특별공급' 게시판 — 중소기업 장기근속자 우선공급(기관추천) 안내.
+    목록 행: <tr onclick="doBbsFView('cbIdx','bcIdx',...)" title="글제목">.
+    이 공고들은 임대가 아니라 분양 특공(기관추천)이라 flags 분양=True로 넣어
+    rules가 임대 태그('청약통장·재당첨 무관') 대신 분양 태그를 붙이게 한다."""
+    r = requests.get(board["list_url"], headers=HEADERS, timeout=30, verify=False)
+    r.raise_for_status()
+    out = []
+    for m in re.finditer(r"doBbsFView\('(\d+)','(\d+)'.*?title=\"([^\"]+)\"(.*?)</tr>", r.text, re.S):
+        cbx, bc, title, rest = m.groups()
+        title = " ".join(title.split())
+        if len(title) < 6 or not _keyword_ok(board, title):
+            continue
+        out.append({
+            "id": f"board:mss:{bc}",
+            "source": "board",
+            "name": title,
+            "house_kind": "중기 장기근속 특공(기관추천)",
+            "region": "서울",
+            "address": "서울",
+            "notice_date": _norm_date(re.sub(r"<[^>]+>", " ", rest)),
+            "url": f"https://www.mss.go.kr/site/seoul/ex/bbs/View.do?cbIdx={cbx}&bcIdx={bc}",
+            "flags": {"분양": True},
+            "raw": {"board": board["name"], "bcIdx": bc},
+        })
+    return out
+
+
 _SCRAPERS = {
     "soco_json": _scrape_soco_json,
     "sh_board": _scrape_sh_board,
+    "mss_board": _scrape_mss_board,
     "anchor": _scrape_anchor_board,
 }
 
