@@ -409,7 +409,9 @@ def _rent_prompt(profile=None):
     return (
         "아래 임대주택(청년안심·SH 매입임대·공공임대 등) 입주자모집공고문에서 JSON 객체 하나만 출력하라. "
         "설명·마크다운 없이 JSON만. "
-        "키: apply_start(청약/신청 접수 시작일 YYYY-MM-DD), apply_end(접수 마감일 YYYY-MM-DD), "
+        "키: apply_start(실제 '청약/접수 시작일' YYYY-MM-DD — 1순위 접수일 등 접수가 시작되는 날. "
+        "★'모집공고일'이 아님(모집공고일과 접수일이 다르면 반드시 접수일을 쓸 것)), "
+        "apply_end(접수 마감일 YYYY-MM-DD — 마지막 순위 접수일), "
         "deposit_manwon(임대보증금=계약 시 목돈으로 내는 큰 금액, 만원 단위 숫자, 여러 타입이면 최저), "
         "monthly_manwon(월 임대료=매달 내는 작은 금액, 만원 단위, 없으면 0), "
         "area_m2(전용면적 최소 ㎡), "
@@ -599,8 +601,10 @@ def _fetch_lh_pdf_by_url(notice):
 
 
 def _build_public_rent(notice, min_area=0, profile=None, on_event=None):
-    """LH임대·GH 공고 — 접수기간은 목록에 있고, 공고문 PDF에서 보증금/월세/평형을 뽑는다."""
-    t = {"kind": "rent", "apply_start": notice.get("r1_start"), "apply_end": notice.get("r1_end")}
+    """LH임대·GH 공고 — 공고문 PDF에서 보증금/월세/평형 + 접수기간을 뽑는다.
+    GH/LH 목록의 접수일은 '모집공고일'이 잡히는 등 부정확한 경우가 있어(예: 다산진건데시앙
+    목록 8/13 vs 실제 1순위 접수 8/24), 공고문에서 LLM이 읽은 접수기간을 우선한다."""
+    t = {"kind": "rent"}   # apply_start/end는 LLM(공고문) 우선, 없으면 아래에서 목록값 폴백
     src = notice.get("source")
     _emit(on_event, phase="📄 공고문 다운로드 중…")
     try:
@@ -617,7 +621,11 @@ def _build_public_rent(notice, min_area=0, profile=None, on_event=None):
                 t["units"] = _rent_units(pdf, min_area)
         except Exception as e:  # noqa: BLE001
             log.warning("임대료 표 파싱 실패(%s): %s", notice.get("name"), e)
-        _rent_llm_merge(t, pdf, profile, on_event)  # 입주·거주기간·계약금·자격조언 + 표 실패 시 보증금 폴백
+        _rent_llm_merge(t, pdf, profile, on_event)  # 접수기간·입주·계약금·자격조언 + 표 실패 시 보증금 폴백
+    if not t.get("apply_start"):   # LLM이 못 읽었으면 목록 접수일로 폴백
+        t["apply_start"] = notice.get("r1_start")
+    if not t.get("apply_end"):
+        t["apply_end"] = notice.get("r1_end")
     if not t.get("area_m2"):  # GH 상세의 전용면적 범위(예: '26.9294 ~ 51.9289') 최저값
         m = re.search(r"(\d+(?:\.\d+)?)", (notice.get("raw") or {}).get("area_text") or "")
         if m:
