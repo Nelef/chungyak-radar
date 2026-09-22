@@ -608,7 +608,10 @@ def _build_public_rent(notice, min_area=0, profile=None, on_event=None):
     src = notice.get("source")
     _emit(on_event, phase="📄 공고문 다운로드 중…")
     try:
-        pdf = _fetch_gh_pdf(notice) if src == "gh" else _fetch_lh_rent_pdf(notice)
+        if src == "gh":
+            pdf = _fetch_gh_pdf(notice)
+        else:  # lh_rent — panId 직접(이름검색은 동명·유사명 다른 단지를 오매칭. 예: 강서염창→인천 공고문)
+            pdf = _fetch_lh_pdf_by_url(notice) or _fetch_lh_rent_pdf(notice)
     except Exception as e:  # noqa: BLE001
         log.warning("%s 공고문 PDF 실패(%s): %s", src, notice.get("name"), e)
         pdf = None
