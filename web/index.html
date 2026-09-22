@@ -323,6 +323,7 @@ const $ = s => document.querySelector(s);
 /* 공고 종류: 분양(applyhome·lh) / 무순위(applyhome_remndr) / 임대(applyhome_rent·board) */
 function catOf(n){
   if(n.source==='applyhome_remndr') return 'remndr';
+  if((n.flags||{})['분양']) return 'sale';   // 분양 플래그(중기 장기근속 특공·SH 분양게시판 등)는 분양 탭
   if(['applyhome_rent','board','lh_rent','gh'].includes(n.source)) return 'rent';
   return 'sale';
 }
