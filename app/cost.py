@@ -325,6 +325,37 @@ def _openai_terms(pdf_bytes, s, prompt=None, keywords=None, on_event=None):
     return _parse_json(r.json()["choices"][0]["message"]["content"])
 
 
+# --------------------------------------------------- Gemini (무료 티어, 네이티브 API)
+def _gemini_generate(prompt, s, on_event=None, max_tokens=4000):
+    """Gemini generateContent(무료). thinkingBudget:0으로 사고 토큰을 꺼 JSON을 바로 받는다.
+    스트리밍은 안 쓰고(백그라운드 잡이라 불필요) 단계만 표시."""
+    key = s.get("api_key") or os.environ.get("GEMINI_API_KEY", "")
+    model = s.get("model") or "gemini-flash-latest"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    body = {"contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0, "maxOutputTokens": max_tokens,
+                                 "thinkingConfig": {"thinkingBudget": 0}}}
+    try:
+        r = requests.post(url, headers={"x-goog-api-key": key}, json=body, timeout=180)
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise LLMDownError(str(e)) from e
+    try:
+        return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError):
+        return ""
+
+
+def _gemini_terms(pdf_bytes, s, prompt=None, keywords=None, on_event=None):
+    _emit(on_event, phase="📄 PDF 텍스트 추출 중…")
+    text = _pdf_text(pdf_bytes, keywords=keywords)
+    if not text:
+        return None
+    _emit(on_event, pdf_text=text)   # Q&A 컨텍스트 캐시용
+    _emit(on_event, phase="🤖 LLM 분석 중…")
+    return _parse_json(_gemini_generate((prompt or OPENAI_PROMPT) + "\n\n---공고문---\n" + text, s, on_event, 4000))
+
+
 # ------------------------------------------------------ LLM 설정 (DB 영속·웹 편집)
 _LLM_FIELDS = ("provider", "base_url", "model", "user", "pass", "api_key", "temperature")
 
@@ -348,6 +379,8 @@ def save_llm_settings(d):
 
 def _llm_terms(pdf_bytes, s, prompt=None, keywords=None, on_event=None):
     prov = (s.get("provider") or "").lower()
+    if prov == "gemini":
+        return _gemini_terms(pdf_bytes, s, prompt, keywords, on_event)
     if prov in ("openai", "custom", "vllm"):
         return _openai_terms(pdf_bytes, s, prompt, keywords, on_event)
     return None
@@ -356,6 +389,9 @@ def _llm_terms(pdf_bytes, s, prompt=None, keywords=None, on_event=None):
 def _llm_json(prompt, s, on_event=None):
     """PDF 없이 텍스트 프롬프트만으로 LLM JSON 응답(예: 메타데이터 순위조언)."""
     prov = (s.get("provider") or "").lower()
+    if prov == "gemini":
+        _emit(on_event, phase="🤖 순위 조언 생성 중…")
+        return _parse_json(_gemini_generate(prompt, s, on_event, 2000))
     if prov in ("openai", "custom", "vllm"):
         body = _openai_body(s, [{"role": "user", "content": prompt}], 2000)
         url = s["base_url"].rstrip("/") + "/v1/chat/completions"
