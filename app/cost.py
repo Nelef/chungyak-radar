@@ -806,6 +806,24 @@ def _who(profile):
         s += (f". ★소득 판정은 건강보험 보수월액 기준(사회보장정보시스템 조회 1순위): "
               f"본인 월 {me2:,}원, 배우자 월 {sp2:,}원, 합산 월 {me2+sp2:,}원"
               f"({(me2+sp2)/10000:.1f}만). 둘 다 소득이 있어 맞벌이 기준을 적용할 것")
+    # 청약통장 — 1순위·납입인정금액 순차제·특공 6회 요건 판단에 쓴다.
+    sa = (profile or {}).get("savings_account") or {}
+    parts = []
+    for who_key, label in (("me", "본인"), ("spouse", "배우자")):
+        a = sa.get(who_key) or {}
+        if not a:
+            continue
+        p = f"{label} 납입 {a.get('paid_count')}회"
+        if a.get("recognized_won"):
+            p += f"·납입인정금액 {a['recognized_won']:,}원"
+        elif a.get("balance_won"):
+            p += f"·잔액 {a['balance_won']:,}원"
+        p += f"·순위기산일 {a.get('rank_base_date') or '미확인'}"
+        parts.append(p)
+    if parts:
+        s += ". 청약통장: " + ", ".join(parts)
+    if (profile or {}).get("wish"):
+        s += f". 희망 조건: {profile['wish']}"
     return s
 
 
