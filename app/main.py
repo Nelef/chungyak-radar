@@ -150,6 +150,8 @@ def api_whoami(request: Request):
 @app.post("/api/login")
 def api_login(request: Request, payload: dict = Body(...)):
     """비밀번호 로그인. IP별 실패 횟수 제한으로 무차별 대입 차단."""
+    if DEMO:  # 공개 데모는 로그인 자체가 없다(비번 미설정이어도 ok를 주지 않게)
+        return _forbid()
     if not _DASH_PW:
         return {"ok": True}
     ip = _client_ip(request)
