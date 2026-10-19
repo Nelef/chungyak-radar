@@ -155,6 +155,12 @@ def build_tags(n: dict, cfg: dict) -> list[str]:
     return tags
 
 
+def watched(n: dict, cfg: dict) -> bool:
+    """config watchlist(관심단지)에 걸리는 공고인지. 청약홈 이름은 띄어쓰기가 제각각이라 공백을 빼고 비교."""
+    name = (n.get("name") or "").replace(" ", "")
+    return any(kw.replace(" ", "") in name for kw in cfg.get("watchlist") or [])
+
+
 def process(notices: list[dict]) -> list[dict]:
     """수집 원본에 matched/tags를 채워서 반환."""
     from app import commute  # 순환 임포트 방지
@@ -194,7 +200,8 @@ def process(notices: list[dict]) -> list[dict]:
                 else:  # 지오코딩 실패 — 거르지 않고 남기되 통근 미확인임을 표시
                     n["tags"].insert(0, "🚇 통근시간 확인 필요(주소 미확인)")
             continue
-        n["matched"] = match_region(n, cfg) and not excluded(n, cfg)
+        watch = watched(n, cfg)
+        n["matched"] = watch or (match_region(n, cfg) and not excluded(n, cfg))
         if n.get("source") == "applyhome_rent":  # 공공지원 민간임대 — 지역/통근 필터 + 임대 태그
             n["tags"] = build_rental_tags(n, cfg) if n["matched"] else []
         else:
@@ -211,8 +218,10 @@ def process(notices: list[dict]) -> list[dict]:
                 mark = "⚠ " if over else ""
                 suffix = f" — {ccfg['max_minutes']}분 초과" if over else ""
                 n["tags"].insert(0, f"{mark}🚇 목적지 약 {minutes}분 · 환승 {transfers}회{suffix}")
-                if over and ccfg.get("exclude_over"):
+                if over and ccfg.get("exclude_over") and not watch:
                     n["matched"] = False
+        if watch:  # 관심단지는 통근 초과여도 남기고 맨 앞에 표시
+            n["tags"].insert(0, "⭐ 관심단지")
     return notices
 
 
