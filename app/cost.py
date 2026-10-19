@@ -18,6 +18,9 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -339,11 +342,72 @@ def _gemini_generate(prompt, s, on_event=None, max_tokens=4000):
         r = requests.post(url, headers={"x-goog-api-key": key}, json=body, timeout=180)
         r.raise_for_status()
     except requests.exceptions.RequestException as e:
+        # 무료 티어 한도(429)·장애 시 개인 Claude 구독으로 한 번 더. 토큰이 없으면 그대로 실패.
+        if claude_available():
+            log.warning("Gemini 실패(%s) → Claude 폴백", e)
+            return _claude_generate(prompt, on_event)
         raise LLMDownError(str(e)) from e
     try:
         return r.json()["candidates"][0]["content"]["parts"][0]["text"]
     except (KeyError, IndexError):
         return ""
+
+
+# --------------------------------------------------- Claude (개인 구독 폴백, claude -p 헤드리스)
+# 법숲(finlaw-rag) src/llm.mjs claudeJSON()과 같은 방식. ★ 토큰은 개인(user) 구독 토큰만 쓴다.
+# 개발 맥의 기본 claude 로그인은 기본 계정이라, 토큰이 없을 때 기본 로그인으로 넘어가면
+# 기본 계정으로 과금된다(2026-10-13 법숲 사고). 그래서 토큰이 없으면 아예 호출하지 않는다.
+# 토큰은 이미지에 굽지 않고 finalize.sh가 NAS의 claude.env를 --env-file로 물린다.
+_CLAUDE_TOKEN_ENVS = ("CHUNGYAK_CLAUDE_TOKEN", "FINLAW_CLAUDE_TOKEN")
+
+
+def _claude_token():
+    for k in _CLAUDE_TOKEN_ENVS:
+        if (os.environ.get(k) or "").strip():
+            return os.environ[k].strip()
+    return ""
+
+
+def claude_available():
+    return bool(_claude_token() and shutil.which("claude"))
+
+
+def _claude_generate(prompt, on_event=None, timeout=180):
+    token, exe = _claude_token(), shutil.which("claude")
+    if not (token and exe):
+        raise LLMDownError("Claude 폴백 불가(개인 토큰 또는 claude CLI 없음)")
+    cfg_dir = os.environ.get("CHUNGYAK_CLAUDE_CONFIG_DIR", "/data/claude-config")
+    os.makedirs(cfg_dir, exist_ok=True)
+    # 부모 env(ANTHROPIC_*·다른 API 키·텔레그램 토큰)를 넘기지 않고 필요한 것만 새로 만든다.
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": cfg_dir, "LANG": "C.UTF-8",
+        "CLAUDE_CODE_OAUTH_TOKEN": token, "CLAUDE_CONFIG_DIR": cfg_dir,
+        "DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+        "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS": "1",
+    }
+    args = [exe, "-p", "표준입력으로 받은 요청을 그대로 수행하라.",
+            "--output-format", "json", "--model", os.environ.get("CHUNGYAK_CLAUDE_MODEL", "sonnet"),
+            "--tools", "", "--no-session-persistence", "--disable-slash-commands", "--setting-sources", "",
+            "--system-prompt", "너는 한국 청약·임대 공고문 분석 도우미다. 요청이 JSON을 원하면 JSON만 출력한다."]
+    _emit(on_event, phase="🤖 Gemini 응답 없음 → Claude로 분석 중…")
+    work = tempfile.mkdtemp(prefix="cr-claude-")  # 빈 cwd — CLAUDE.md 등이 읽히지 않게
+    try:
+        p = subprocess.run(args, input=prompt, capture_output=True, text=True,
+                           timeout=timeout, cwd=work, env=env)
+    except subprocess.TimeoutExpired as e:
+        raise LLMDownError(f"Claude 시간 초과({timeout}s)") from e
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    try:
+        j = json.loads(p.stdout)
+    except ValueError as e:
+        raise LLMDownError(f"Claude 출력 파싱 실패(code {p.returncode}): {(p.stdout or p.stderr)[:200]}") from e
+    if j.get("is_error"):
+        raise LLMDownError("Claude 오류: " + str(j.get("result"))[:200])
+    log.info("Claude 폴백 사용 (%.1fs, $%s)", (j.get("duration_ms") or 0) / 1000, j.get("total_cost_usd"))
+    return str(j.get("result") or "")
 
 
 def _gemini_terms(pdf_bytes, s, prompt=None, keywords=None, on_event=None):
@@ -1157,6 +1221,13 @@ def ask(notice, question, cfg, on_event=None):
     if history:
         prompt.append("[이전 질문응답]\n" + "\n".join(f"Q: {h['q']}\nA: {h['a']}" for h in history[-5:]))
     prompt.append(f"[질문]\n{question}")
+    if (s.get("provider") or "").lower() == "gemini":
+        # 예전엔 Q&A가 OpenAI 경로만 타서 Gemini 설정에선 base_url이 비어 항상 실패했다.
+        _emit(on_event, phase="🤖 답변 생성 중…")
+        answer = (_gemini_generate("\n\n".join(prompt), s, on_event, 4000) or "").strip()
+        if answer:
+            db.add_qa(nid, question, answer)
+        return answer
     body = _openai_body(s, [{"role": "user", "content": "\n\n".join(prompt)}], 4000)
     url = s["base_url"].rstrip("/") + "/v1/chat/completions"
     if on_event:

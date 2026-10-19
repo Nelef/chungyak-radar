@@ -174,7 +174,9 @@ def process(notices: list[dict]) -> list[dict]:
             # 모집공고가 아닌 후속 게시글(발표·경쟁률·사전점검 등)은 접수일정이 없어
             # '접수 확인'으로 잘못 떠 대시보드를 오염시키므로 제외한다.
             name = n.get("name") or ""
-            noise = any(kw in name for kw in cfg.get("board_exclude_keywords", []))
+            # 띄어쓰기 무시하고 비교('입주안내' 키워드가 '입주 안내문'을 못 거르던 문제)
+            flat = name.replace(" ", "")
+            noise = any(kw.replace(" ", "") in flat for kw in cfg.get("board_exclude_keywords", []))
             n["matched"] = not excluded(n, cfg) and not noise
             if not n["matched"]:
                 n["tags"] = []

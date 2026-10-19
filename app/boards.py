@@ -164,7 +164,10 @@ def _notice(board: dict, uid: str, title: str, link: str, posted, address="서�
     # 단 분양 게시판에도 임대 공고가 섞여 올라온다(청년안심주택·성동스페이스 등).
     # 제목에 임대 유형이 보이면 분양 플래그를 붙이지 않는다 — 안 그러면 임대 공고에
     # '청약통장 사용·재당첨 제한' 태그가 붙어 정반대 안내가 나간다.
-    sale = bool(board.get("sale")) and not any(k in title for k in _RENT_HINTS)
+    # 반대로 임대 게시판(m_247)에도 분양 공고가 올라온다(고덕강일3 토지임대부 분양주택, 2026-10-16).
+    # 제목에 '분양주택·공공분양'이 있으면 게시판과 무관하게 분양으로 본다.
+    sale_title = any(k in title for k in ("분양주택", "공공분양"))
+    sale = (bool(board.get("sale")) or sale_title) and not any(k in title for k in _RENT_HINTS)
     return {
         "id": f"board:{uid}",
         "source": "board",

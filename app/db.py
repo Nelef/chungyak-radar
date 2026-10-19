@@ -185,11 +185,12 @@ def deactivate_board_noise(keywords: list) -> int:
     크롤 피드에서 밀려나 재수집·재평가되지 않는 기존 행까지 확실히 정리한다."""
     if not keywords:
         return 0
-    where = " OR ".join(["name LIKE ?"] * len(keywords))
+    # 띄어쓰기 무시 비교 — rules.process의 노이즈 판정과 같은 기준
+    where = " OR ".join(["REPLACE(name, ' ', '') LIKE ?"] * len(keywords))
     with conn() as c:
         cur = c.execute(
             f"UPDATE notices SET matched = 0 WHERE source = 'board' AND matched = 1 AND ({where})",
-            [f"%{k}%" for k in keywords],
+            [f"%{k.replace(' ', '')}%" for k in keywords],
         )
         return cur.rowcount
 
