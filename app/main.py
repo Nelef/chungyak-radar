@@ -84,11 +84,14 @@ async def lifespan(_: FastAPI):
     cost.init()
     cfg = rules.load_config()
     sched = BackgroundScheduler(timezone="Asia/Seoul")
-    sched.add_job(run_collection, "interval", minutes=cfg["poll_interval_minutes"],
-                  next_run_time=datetime.now(KST) + timedelta(seconds=5))
-    sched.add_job(run_reminders, "cron", hour=8, minute=30)  # 매일 아침 8:30 리마인더
+    if not DEMO:  # 데모는 정리된 DB 사본을 보여주기만 한다(수집·알림·자동분석 없음 → API·LLM 비용 0)
+        sched.add_job(run_collection, "interval", minutes=cfg["poll_interval_minutes"],
+                      next_run_time=datetime.now(KST) + timedelta(seconds=5))
+        sched.add_job(run_reminders, "cron", hour=8, minute=30)  # 매일 아침 8:30 리마인더
+        threading.Thread(target=_auto_worker, daemon=True).start()  # 자동 분석 직렬 워커
+    else:
+        log.info("DEMO_MODE — 수집·리마인더·자동분석·텔레그램 비활성")
     sched.start()
-    threading.Thread(target=_auto_worker, daemon=True).start()  # 자동 분석 직렬 워커
     log.info("스케줄러 시작 (수집 주기 %d분, 리마인더 08:30)", cfg["poll_interval_minutes"])
     yield
     sched.shutdown(wait=False)
@@ -120,7 +123,14 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "?"
 
 
+# 공개 데모(uyai 포트폴리오 /radar/). 개인 데이터를 지운 DB 사본으로 띄우는 별도 컨테이너에서만 켠다.
+# 데모에선 누구도 로그인할 수 없고(전원 게스트=읽기 전용), 텔레그램·LLM 자동분석·리마인더가 꺼진다.
+DEMO = os.environ.get("DEMO_MODE", "") == "1"
+
+
 def _authed(request: Request) -> bool:
+    if DEMO:                    # 데모는 비번이 있어도 로그인 불가 — 항상 게스트
+        return False
     if not _DASH_PW:            # 비번 미설정 = 게이트 없음(전원 허용)
         return True
     return db.session_valid(request.cookies.get("cr_session", ""))
@@ -134,7 +144,7 @@ def _forbid():
 @app.get("/api/whoami")
 def api_whoami(request: Request):
     """현재 세션 권한. 대시보드가 게이트를 띄울지 판단."""
-    return {"authed": _authed(request), "gated": bool(_DASH_PW)}
+    return {"authed": _authed(request), "gated": bool(_DASH_PW) or DEMO, "demo": DEMO}
 
 
 @app.post("/api/login")
@@ -187,9 +197,19 @@ def _strip_personal(r: dict):
     for h in (r.get("llm_history") or []):
         clean(h.get("r"))
     r["qa"] = []
-    # 가구 상황이 박힌 태그 제거: 소득 판정(소득/맞벌이) + 혼인상태(혼인/예비신혼/기혼).
-    _hide = ("소득", "맞벌이", "혼인", "예비신혼", "기혼")
+    # 가구 상황이 박힌 태그 제거: 소득 판정(소득/맞벌이) + 혼인상태(혼인/예비신혼/기혼)
+    # + 생활권·관심(🚇 목적지 통근 = 출퇴근지, '서울 당해'·'서울 거주자' = 거주지, ⭐ 관심단지).
+    _hide = ("소득", "맞벌이", "혼인", "예비신혼", "기혼",
+             "목적지", "🚇", "통근", "당해", "거주자", "관심단지")
     r["tags"] = [t for t in (r.get("tags") or []) if not any(w in t for w in _hide)]
+    # 메모(우리 판단 메모)·통근 분·LLM 메모(note)·알림끔/접기 표시도 개인 정보라 비운다.
+    r["memo"] = ""
+    r["commute_min"] = None
+    r["muted"] = False
+    r["collapsed"] = False
+    for res in [r.get("llm")] + [h.get("r") for h in (r.get("llm_history") or [])]:
+        if isinstance(res, dict):
+            res.pop("note", None)
 
 
 @app.get("/api/notices")

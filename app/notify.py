@@ -8,6 +8,8 @@ log = logging.getLogger("notify")
 
 
 def send_telegram(text: str) -> bool:
+    if os.environ.get("DEMO_MODE", "") == "1":   # 공개 데모는 이미지에 토큰이 있어도 절대 발송 안 함
+        return False
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     if not token or not chat_id:

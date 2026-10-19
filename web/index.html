@@ -37,7 +37,8 @@ body{background:var(--bg); color:var(--ink);
 /* 게스트(읽기 전용): 쓰기 컨트롤 숨김 (서버에서도 차단됨) */
 body.guest .adminonly,
 body.guest .analyze,
-body.guest .askbox{display:none !important}
+body.guest .askbox,
+body.guest .personal{display:none !important}   /* 출퇴근지(통근 필터) 등 개인 기준 UI */
 body.guest .memo{cursor:default}   /* 게스트: 메모는 보이되 편집 불가(렌더에서 onclick 제거) */
 
 header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:space-between; gap:12px}
@@ -249,7 +250,7 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
     <div class="brand">청약 <em>레이더</em></div>
     <div class="sync">
       <span id="syncInfo">동기화 대기 중</span>
-      <span id="guestBadge" style="display:none">👀 게스트 · <a href="#" onclick="loginPrompt();return false">로그인</a></span>
+      <span id="guestBadge" style="display:none">👀 게스트<span id="guestLogin"> · <a href="#" onclick="loginPrompt();return false">로그인</a></span></span>
       <button id="settingsBtn" class="adminonly" type="button" title="공고문 분석 LLM 설정">⚙ LLM</button>
       <button id="refreshBtn" class="adminonly" type="button">지금 수집</button>
     </div>
@@ -300,7 +301,7 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
   </div>
 
   <div class="filterbar">
-    <label class="fchk"><input type="checkbox" id="cmOn" checked> 🚇 목적지
+    <label class="fchk personal"><input type="checkbox" id="cmOn" checked> 🚇 목적지
       <input type="number" id="cmVal" min="10" step="5" value="60"> 분 이내</label>
     <label class="fchk"><input type="checkbox" id="areaOn" checked> 전용
       <input type="number" id="areaVal" min="0" step="1" value="30"> ㎡ 이상</label>
@@ -552,7 +553,7 @@ async function enrichNotice(id, force){
   const n = NOTICES.find(x=>x.id===id); if(!n) return;
   n._loading = true; n._llmError = null; n._phase = '분석 시작 중…'; render();
   try{  // 서버 백그라운드 잡 시작 → 즉시 반환(브라우저 닫아도 서버가 끝까지 실행)
-    await fetch('/api/enrich',{method:'POST',headers:{'Content-Type':'application/json'},
+    await fetch('api/enrich',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({id, force: !!force})});
   }catch(e){ n._llmError = 'network'; n._loading = false; render(); return; }
   startPoll(id);
@@ -564,7 +565,7 @@ async function pollEnrich(id){
   const n = NOTICES.find(x=>x.id===id);
   if(!n || !n._loading){ POLLING.delete(id); return; }
   try{
-    const s = await (await fetch('/api/enrich-status?id=' + encodeURIComponent(id))).json();
+    const s = await (await fetch('api/enrich-status?id=' + encodeURIComponent(id))).json();
     if(s.done){
       if(s.error){ n._llmError = s.error; }
       else { n.enriched = true; n.llm = s.llm || null; n._hidx = 0;
@@ -607,7 +608,7 @@ async function askNotice(id){
   const el = k => document.getElementById(k + id);
   const append = (e, t) => { if(e){ e.textContent += t; e.scrollTop = e.scrollHeight; } };
   try{
-    const res = await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+    const res = await fetch('api/ask',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({id, question, stream:true})});
     if(!res.ok || !res.body) throw new Error('bad response');
     const reader = res.body.getReader(), dec = new TextDecoder();
@@ -646,7 +647,7 @@ async function saveMemo(id, text){
   if(text === (n.memo||'')){ swapCard(id); return; }
   n.memo = text; swapCard(id);                          // 낙관적 갱신
   try{
-    await fetch('/api/memo',{method:'POST',headers:{'Content-Type':'application/json'},
+    await fetch('api/memo',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({id, text})});
   }catch(e){ /* 실패 시 다음 목록 갱신 때 되돌아옴 */ }
 }
@@ -677,7 +678,7 @@ async function toggleMute(id){
   n.muted = next; swapCard(id);              // 낙관적 갱신(즉시 접기/펼치기)
   if(GUEST) return;                          // 게스트: 화면만 토글(DB 저장 안 함, 새로고침 시 원복)
   try{
-    await fetch('/api/mute',{method:'POST',headers:{'Content-Type':'application/json'},
+    await fetch('api/mute',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({id, muted: next})});
   }catch(e){ n.muted = !next; swapCard(id); } // 실패 시 롤백
 }
@@ -687,7 +688,7 @@ async function toggleCollapse(id){
   n.collapsed = next; swapCard(id);           // 낙관적 갱신(즉시 1줄/펼침)
   if(GUEST) return;                           // 게스트: 화면만 토글(DB 저장 안 함)
   try{
-    await fetch('/api/collapse',{method:'POST',headers:{'Content-Type':'application/json'},
+    await fetch('api/collapse',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({id, collapsed: next})});
   }catch(e){ n.collapsed = !next; swapCard(id); }  // 실패 시 롤백
 }
@@ -741,7 +742,7 @@ function render(){
 }
 
 async function loadStatus(){
-  const s = await (await fetch('/api/status')).json();
+  const s = await (await fetch('api/status')).json();
   TODAY = new Date(s.today+'T00:00:00');
   $('#syncInfo').textContent = s.last_sync ? `마지막 동기화 ${s.last_sync.slice(5,16)} · ${s.last_sync_counts||''}` : '아직 동기화 전';
   const pills = [];
@@ -754,10 +755,10 @@ async function loadStatus(){
 }
 
 async function loadNotices(){
-  NOTICES = await (await fetch('/api/notices')).json();
+  NOTICES = await (await fetch('api/notices')).json();
   render();
   try{  // 서버에서 진행 중인 분석이 있으면 진행표시 복원 + 폴링 재개(재접속·주기갱신 대비)
-    const jobs = await (await fetch('/api/enrich-jobs')).json();
+    const jobs = await (await fetch('api/enrich-jobs')).json();
     let any = false;
     for(const id of (jobs.running || [])){
       const n = NOTICES.find(x=>x.id===id);
@@ -839,13 +840,13 @@ loadFilterPrefs();
 
 $('#refreshBtn').addEventListener('click', async ()=>{
   $('#refreshBtn').disabled = true; $('#refreshBtn').textContent = '수집 중…';
-  try{ await fetch('/api/refresh', {method:'POST'}); await loadStatus(); await loadNotices(); }
+  try{ await fetch('api/refresh', {method:'POST'}); await loadStatus(); await loadNotices(); }
   finally{ $('#refreshBtn').disabled = false; $('#refreshBtn').textContent = '지금 수집'; }
 });
 
 /* LLM 설정 패널 */
 async function loadSettings(){
-  const s = await (await fetch('/api/settings')).json();
+  const s = await (await fetch('api/settings')).json();
   $('#setProvider').value = s.provider || '';
   $('#setBaseUrl').value = s.base_url || '';
   $('#setModel').value = s.model || '';
@@ -860,7 +861,7 @@ $('#settingsBtn').addEventListener('click', ()=>{
 });
 $('#setSave').addEventListener('click', async ()=>{
   $('#setStatus').textContent = '저장 중…';
-  await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
+  await fetch('api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({
       provider: $('#setProvider').value, base_url: $('#setBaseUrl').value.trim(),
       model: $('#setModel').value.trim(), user: $('#setUser').value.trim(),
@@ -873,8 +874,11 @@ $('#setSave').addEventListener('click', async ()=>{
 });
 
 /* ── 로그인 게이트 ─────────────────────────────────────────── */
+let DEMO = false;   // 공개 데모(uyai /radar/) — 게이트 없이 바로 게스트, 로그인 불가
 function startApp(guest){
   GUEST = guest;
+  if(guest) CM_ON = false;   // 게스트는 통근값을 받지 않으므로(서버에서 제거) 필터도 끈다
+  const gl = document.getElementById('guestLogin'); if(gl) gl.style.display = DEMO ? 'none' : '';
   document.body.classList.toggle('guest', guest);
   document.getElementById('gate').style.display = 'none';
   document.getElementById('guestBadge').style.display = guest ? '' : 'none';
@@ -889,7 +893,7 @@ async function submitLogin(){
   const btn = document.getElementById('gateLogin');
   err.textContent = '확인 중…'; btn.disabled = true;
   try{
-    const r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+    const r = await fetch('api/login',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({password: document.getElementById('gatePw').value})});
     const j = await r.json();
     if(j.ok){ localStorage.removeItem('cr_guest'); err.textContent=''; startApp(false); return; }
@@ -901,8 +905,9 @@ function enterGuest(){ localStorage.setItem('cr_guest','1'); startApp(true); }
 function loginPrompt(){ localStorage.removeItem('cr_guest'); showGate(); }
 async function boot(){
   let authed = false, gated = true;
-  try{ const w = await (await fetch('/api/whoami')).json(); authed = w.authed; gated = w.gated; }
+  try{ const w = await (await fetch('api/whoami')).json(); authed = w.authed; gated = w.gated; DEMO = !!w.demo; }
   catch(e){ authed = true; gated = false; }              // whoami 실패 시 앱은 뜨게(읽기)
+  if(DEMO) return startApp(true);                         // 데모: 비번 화면 없이 바로 둘러보기
   if(!gated || authed) return startApp(false);            // 게이트 없음 or 이미 로그인 → 전체
   if(localStorage.getItem('cr_guest') === '1') return startApp(true);  // 게스트 기억
   showGate();
