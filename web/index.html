@@ -315,6 +315,7 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 
 <script>
 let NOTICES = [], FILTER = 'active', CAT = 'all', SORT = 'deadline', TODAY = new Date();
+let DEMO = false;   // 공개 데모(uyai /radar/) — 게이트 없이 바로 게스트, 로그인 불가
 let GUEST = false;   // 게스트(읽기 전용) 모드 — 서버에서도 쓰기 차단됨
 // 값 필터(면적·필요현금) — 각각 켜기/끄기 + 값 조정, 동시 적용. localStorage에 저장.
 // 전용 30㎡ 이하(원룸급)는 분석되면 제외 — 기본 켜짐. 미분석은 값을 몰라 통과.
@@ -735,7 +736,7 @@ function render(){
     });
   $('#list').innerHTML = rows.length
     ? rows.map(x=>card(x.n)).join('')
-    : `<div class="empty"><b>표시할 공고가 없습니다</b>필터를 조정하거나 '지금 수집'을 눌러보세요.</div>`;
+    : `<div class="empty"><b>표시할 공고가 없습니다</b>${DEMO ? "상태를 '전체'로 바꾸거나 면적·현금 필터를 꺼 보세요." : "필터를 조정하거나 '지금 수집'을 눌러보세요."}</div>`;
   const fh = $('#filterHint');
   if(fh) fh.textContent = (AREA_ON || CASH_ON || CM_ON)
     ? '※ 값을 아는 공고에만 적용됩니다(미분석·주소 미확인은 그대로 표시).' : '';
@@ -745,6 +746,11 @@ async function loadStatus(){
   const s = await (await fetch('api/status')).json();
   TODAY = new Date(s.today+'T00:00:00');
   $('#syncInfo').textContent = s.last_sync ? `마지막 동기화 ${s.last_sync.slice(5,16)} · ${s.last_sync_counts||''}` : '아직 동기화 전';
+  if(DEMO){  // 데모: 키·텔레그램 배지는 '고장'처럼 보이므로 숨기고 데모 안내 한 줄만
+    $('#syncInfo').textContent = s.last_sync ? `데이터 기준 ${s.last_sync.slice(0,10)}` : '';
+    $('#statusbar').innerHTML = '<span class="pill">🧪 데모 — 개인 데이터를 뺀 사본입니다 · 수집·알림·AI 분석은 꺼 두었습니다</span>';
+    return;
+  }
   const pills = [];
   if(s.mode) pills.push(`<span class="pill">${s.mode==='premarital'?'혼인신고 전 모드':'기혼 모드'}</span>`);
   pills.push(`<span class="pill ${s.telegram_configured?'ok':'warn'}">텔레그램 ${s.telegram_configured?'연결됨':'미설정'}</span>`);
@@ -874,10 +880,14 @@ $('#setSave').addEventListener('click', async ()=>{
 });
 
 /* ── 로그인 게이트 ─────────────────────────────────────────── */
-let DEMO = false;   // 공개 데모(uyai /radar/) — 게이트 없이 바로 게스트, 로그인 불가
 function startApp(guest){
   GUEST = guest;
   if(guest) CM_ON = false;   // 게스트는 통근값을 받지 않으므로(서버에서 제거) 필터도 끈다
+  if(DEMO){  // 데모 첫 화면이 비지 않게: 사본 데이터는 시간이 지나 대부분 마감·소형이라 '전체' + 면적 필터 끔
+    FILTER = 'all'; AREA_ON = false;
+    const a = document.getElementById('areaOn'); if(a) a.checked = false;
+    syncTabs();
+  }
   const gl = document.getElementById('guestLogin'); if(gl) gl.style.display = DEMO ? 'none' : '';
   document.body.classList.toggle('guest', guest);
   document.getElementById('gate').style.display = 'none';
