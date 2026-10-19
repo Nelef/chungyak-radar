@@ -39,6 +39,7 @@ body.guest .adminonly,
 body.guest .analyze,
 body.guest .askbox,
 body.guest .personal{display:none !important}   /* 출퇴근지(통근 필터) 등 개인 기준 UI */
+body.demo .mutebtn{display:none !important}   /* 데모: 알림 끄기는 의미 없음(게스트는 화면만 토글) */
 body.guest .memo{cursor:default}   /* 게스트: 메모는 보이되 편집 불가(렌더에서 onclick 제거) */
 
 header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:space-between; gap:12px}
@@ -882,6 +883,7 @@ $('#setSave').addEventListener('click', async ()=>{
 /* ── 로그인 게이트 ─────────────────────────────────────────── */
 function startApp(guest){
   GUEST = guest;
+  document.body.classList.toggle('demo', DEMO);
   if(guest) CM_ON = false;   // 게스트는 통근값을 받지 않으므로(서버에서 제거) 필터도 끈다
   if(DEMO){  // 데모 첫 화면이 비지 않게: 사본 데이터는 시간이 지나 대부분 마감·소형이라 '전체' + 면적 필터 끔
     FILTER = 'all'; AREA_ON = false;
