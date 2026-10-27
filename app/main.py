@@ -24,7 +24,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import Body, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
-from app import commute, cost, db, dedupe, ical, notify, rules, sources
+from app import commute, cost, db, dedupe, ical, notify, rent_review, rules, sources
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("main")
@@ -46,7 +46,8 @@ def run_collection() -> dict:
         if is_new:
             new_matched += 1
             key = f"{n['id']}:new"
-            if not db.is_muted(n["id"]) and not db.already_sent(key):  # 알림 끈 공고는 발송 제외
+            # 임대는 분석 뒤 Claude가 '지원할 만한가 · 59㎡↑'를 판단한 다음 보낸다(rent_review.backfill)
+            if not db.is_muted(n["id"]) and not db.already_sent(key) and not rent_review.is_rent(n):
                 notify.send_telegram(rules.new_notice_message(n))
                 db.mark_sent(key)
     # 크롤 피드에서 밀려나 재평가 안 되는 기존 게시판 행 정리(노이즈 키워드 + 노후)
@@ -64,6 +65,7 @@ def run_collection() -> dict:
         dedupe.refresh(db.list_notices(matched_only=True), datetime.now(KST).date())
     except Exception as e:  # noqa: BLE001
         log.warning("공고 묶기 실패: %s", e)
+    threading.Thread(target=rent_review.backfill, daemon=True).start()  # 임대 판단 · 보류 알림
     return {"collected": len(processed), "matched": total_matched, "new": new_matched}
 
 
@@ -86,8 +88,15 @@ def run_reminders():
                  if not db.already_sent(f"{n['id']}:{sfx}")]
         if not items:
             continue
+        title = ""
+        if rent_review.is_rent(n):   # 임대: Claude 판단이 '제외 · 비추천'이면 빼고, 나머지는 판단 표시를 붙인다
+            r = rent_review.get(n["id"])
+            if r is not None and not rent_review.should_alert(r):
+                continue
+            title = rent_review.badge(r) + " "
         grp = groups.get(n["id"]) or {"ids": [n["id"]], "keep": n["id"], "title": ""}
-        e = picked.setdefault(tuple(grp["ids"]), {"n": n, "title": grp.get("title") or "", "whats": []})
+        e = picked.setdefault(tuple(grp["ids"]), {"n": n, "title": title + (grp.get("title") or n["name"]),
+                                                  "whats": []})
         if n["id"] == grp["keep"]:
             e["n"] = n
         e["whats"] += [(left, what) for _, left, what in items]
@@ -241,9 +250,11 @@ def _strip_personal(r: dict):
 @app.get("/api/notices")
 def api_notices(request: Request, all: bool = False):
     rows = db.list_notices(matched_only=not all)
-    if not _authed(request):          # 게스트: 개인 소득 노출 방지
-        for r in rows:
+    authed = _authed(request)
+    for r in rows:
             _strip_personal(r)
+        elif rent_review.is_rent(r):
+            r["rent_review"] = rent_review.get(r["id"])
     return rows
 
 
@@ -428,6 +439,10 @@ def _do_enrich(notice, force=False) -> bool:
         result = cost.enrich(notice, rules.load_config(), force, on_event=on_ev)
         if isinstance(result, dict) and result.get("error"):
             _ENRICH_JOBS[nid]["error"] = result["error"]  # LLM 서버 죽음 등(캐시 안 됨 → 재시도됨)
+        elif rent_review.is_rent(notice):   # 임대: 분석이 끝나면 Claude 판단 → 보류 중인 새 공고 알림
+            if force:
+                db.set_meta("rent_review:" + nid, "")
+            rent_review.backfill(ids={nid})
     except Exception as e:  # noqa: BLE001
         log.warning("%s 분석 실패: %s", notice.get("name"), e)
         _ENRICH_JOBS[nid]["error"] = str(e)[:200]

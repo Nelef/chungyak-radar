@@ -352,7 +352,7 @@ def reminder_digest(entries: list, today: date, limit: int = 3800) -> list[str]:
         lines.append("")
         lines.append("<b>오늘</b>" if left == 0 else f"<b>D-{left}</b>")
         for n, title, whats in by_day[left].values():
-            lines.append(f'• <a href="{_notice_url(n)}">{html.escape(title or n["name"])}</a> — '
+            lines.append(f'• <a href="{_notice_url(n)}">{html.escape(title or n["name"], quote=False)}</a> — '
                          + " · ".join(dict.fromkeys(whats)))
     lines += ["", f'<a href="{_dash_url()}">대시보드에서 전체 보기</a>']
     msgs, cur = [], ""

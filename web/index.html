@@ -176,6 +176,8 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 .llm.stream .thinkbody{color:var(--muted); font-style:italic}
 .memo{display:inline-block; margin-top:4px; font-size:12.5px; background:#FFF9E3; border:1px dashed #E7C766;
   border-radius:6px; padding:4px 8px; cursor:text}
+.rvw{margin-top:4px; font-size:12.5px; color:var(--muted)} .rvw summary{cursor:pointer; color:inherit}
+.rvw b{color:var(--ink)}
 .memo.empty{color:var(--muted); background:transparent; border:1px dotted #C9D6E5;
   font-size:11px; padding:1px 6px; opacity:.75}
 .memoedit{margin-top:4px; width:100%; box-sizing:border-box; font-size:12.5px; padding:4px 8px;
@@ -391,6 +393,10 @@ function card(n){
             onkeydown="if(event.key==='Enter')saveMemo('${n.id}', this.value)"
             onblur="saveMemo('${n.id}', this.value)">`
         : `<div class="memo${n.memo?'':' empty'}" onclick="editMemo('${n.id}')" title="클릭해서 메모 편집">📝 ${n.memo?esc(n.memo):'메모 추가…'}</div>`);
+  // 임대: NAS Claude의 '지원할 만한가 · 59㎡↑' 판단(rent_review) — 한 줄, 누르면 이유 펼침
+  const rv = n.rent_review;
+  const rvIc = rv ? ({'추천':'✅','검토':'🤔','비추천':'👎','제외':'⛔'}[rv.verdict]||'⏳') : '';
+  const review = rv ? `<details class="rvw"><summary>${rvIc} Claude 판단: <b>${esc(rv.verdict)}</b>${rv.has_59===false?' · 59㎡↑ 없음':(rv.area_59_types?' · '+esc(rv.area_59_types):'')}</summary>${esc(rv.reason||'')}${rv.who?'<br>👥 '+esc(rv.who):''}</details>` : '';
   const muteBtn = `<button class="mutebtn${n.muted?' on':''}" onclick="toggleMute('${n.id}')" title="${n.muted?'알림 켜기':'알림 끄기(관심 없음 → 1줄+흐리게)'}">${n.muted?'🔔':'🔕'}</button>`;
   const foldBtn = `<button class="foldbtn" onclick="toggleCollapse('${n.id}')" title="${n.collapsed?'펼치기':'접기(알림은 계속 옴)'}">${n.collapsed?'▾':'▸'}</button>`;
   const btns = `<div class="cardbtns">${n.muted?'':foldBtn}${muteBtn}</div>`;
@@ -429,7 +435,7 @@ function card(n){
   return `<div class="card" data-k="${j.k}" data-nid="${esc(n.id)}">
     <div class="dday ${j.k}"><span class="num">${j.num==='오늘'?'오늘':j.num}</span><span class="lbl">${j.lbl}</span></div>
     <div class="body">${btns}
-      <div class="name">${nm}</div>${memo}
+      <div class="name">${nm}</div>${memo}${review}
       <div class="meta">${esc(n.region||'')} · ${esc(n.house_kind||'')}${supply}${mapBtn}</div>
       ${steps.length ? `<div class="timeline">${steps.join('')}</div>` : ''}
       ${tags ? `<div class="tags">${tags}</div>` : ''}
