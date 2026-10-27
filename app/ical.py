@@ -6,6 +6,7 @@ GET /cal/<CAL_TOKEN>.ics (main.py). 구글 캘린더 '다른 캘린더 → URL�
 정리 규칙:
 - 필터 통과(matched) · 알림 안 끈 공고만, 임대(lh_rent·gh·'임대' 유형)는 제외 — 희망 조건이 분양만
 - config `calendar.skip_ids`: 메인 캘린더에 직접 넣은 공고(중복 방지)
+- 접수 기간이 3일 이상이면 시작일 · 마감일 두 일정으로(긴 막대 대신)
 - 같은 단지 공고가 여럿이면(이름에서 [정정공고]·[무순위]·(3차)·(공고일) 등을 떼고 비교)
   · 정정공고가 섞여 있으면 가장 최근 공고 하나만 남긴다
   · 일정이 똑같은 회차(1차·3차 등)는 한 일정으로 묶는다
@@ -16,11 +17,13 @@ from datetime import date, datetime, timedelta, timezone
 from app import rules
 
 _RENT_SOURCES = ("lh_rent", "gh")
+_LONG_DAYS = 3   # 이보다 긴 접수 기간은 시작 · 마감 하루짜리 두 일정으로(월 보기에 긴 막대가 깔리지 않게)
 
 
 def _base_name(name: str) -> str:
     s = re.sub(r"\[[^\]]*\]", " ", name or "")
     s = re.sub(r"\((?:\d+차|[\d.'’ ]+(?:공고)?)\)", " ", s)
+    s = re.sub(r"(?:최초|추가|잔여세대)?\s*(?:예비)?입주자\s*모집\s*(?:공고)?|모집\s*공고", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 
 
@@ -103,11 +106,18 @@ def build(notices: list[dict], cfg: dict) -> str:
             e = _d(end) or s
             if e < s:
                 e = s
-            if e < lo or s > hi:
-                continue
-            lines += ["BEGIN:VEVENT", f"UID:{n['id']}-{kind}@chungyak-radar", f"DTSTAMP:{stamp}",
-                      f"DTSTART;VALUE=DATE:{s:%Y%m%d}", f"DTEND;VALUE=DATE:{e + timedelta(days=1):%Y%m%d}",
-                      "SUMMARY:" + _esc(f"{label} · {name}"), "DESCRIPTION:" + _esc("\n".join(desc)),
-                      "TRANSP:TRANSPARENT", "END:VEVENT"]
+            if (e - s).days >= _LONG_DAYS:
+                what = label.split(" ", 1)[1]
+                parts = [(f"{kind}-s", s, s, f"{label} 시작 · {name} (~{e.month}/{e.day})"),
+                         (f"{kind}-e", e, e, f"⏰ {what} 마감 · {name}")]
+            else:
+                parts = [(kind, s, e, f"{label} · {name}")]
+            for uid, ps, pe, title in parts:
+                if pe < lo or ps > hi:
+                    continue
+                lines += ["BEGIN:VEVENT", f"UID:{n['id']}-{uid}@chungyak-radar", f"DTSTAMP:{stamp}",
+                          f"DTSTART;VALUE=DATE:{ps:%Y%m%d}", f"DTEND;VALUE=DATE:{pe + timedelta(days=1):%Y%m%d}",
+                          "SUMMARY:" + _esc(title), "DESCRIPTION:" + _esc("\n".join(desc)),
+                          "TRANSP:TRANSPARENT", "END:VEVENT"]
     lines.append("END:VCALENDAR")
     return "\r\n".join(_fold(l) for l in lines) + "\r\n"
