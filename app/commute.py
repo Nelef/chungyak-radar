@@ -118,6 +118,13 @@ def _geocode_candidates(address: str):
             seen.append(q)
 
     add(address)
+    # 괄호 안 지번 주소를 먼저(2026-10-27: 운정 4단지 '…주상복합 4블록(경기도 파주시 동패동 400-7번지 일원)'이
+    # 블록명으로는 안 잡혀 '파주운정3지구 주상복합'이라는 엉뚱한 곳으로 계산 → 114분, 지번으로는 76분)
+    head = " ".join(address.split(" ")[:2])
+    for inner in re.findall(r"[(（]([^()（）]*)[)）]", address):
+        q = re.sub(r"\s*(일원|일대|외\s*\d*\s*필지).*$", "", inner).replace("번지", "").strip()
+        if re.search(r"\d", q):
+            add(q if q.startswith(head.split(" ")[0]) else f"{head} {q}")
     cleaned = re.sub(r"[(（\[].*", "", address)          # 괄호 이후 제거
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     add(cleaned)
