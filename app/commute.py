@@ -46,6 +46,19 @@ MOCK_TIMES = {  # MOCK 모드용 대략치
 
 _SRC = "naver_subway_mobileleader_v2"   # 계산 방식이 바뀌면 캐시를 비운다
 NO_SUBWAY = 999   # 지하철+도보만으로 가는 경로가 없음(버스 필요) — 60분 초과처럼 제외된다
+# 네이버는 몰아서 조회하면 IP를 잠시 막는다(2026-10-27: 10분에 160건 → 400 Bad Request).
+# 실제 경로 조회는 15분에 20건까지만 하고, 나머지는 다음 수집 때로 미룬다(실패도 캐시하지 않음).
+_LIVE: list = []
+_MAX_LIVE, _WINDOW = 20, 900
+
+
+def _budget_ok() -> bool:
+    now = time.time()
+    _LIVE[:] = [t for t in _LIVE if now - t < _WINDOW]
+    if len(_LIVE) >= _MAX_LIVE:
+        return False
+    _LIVE.append(now)
+    return True
 
 
 def init():
@@ -165,7 +178,7 @@ def naver(sx: float, sy: float):
 def transit(sx: float, sy: float):
     """지하철 최단 소요시간 → (분, 환승횟수). 네이버 우선, 없으면 ODsay 지하철 전용. 실패 시 None."""
     best = naver(sx, sy)
-    time.sleep(1.2)   # 네이버에 몰아서 요청하지 않게
+    time.sleep(2.5)   # 네이버에 몰아서 요청하지 않게
     if isinstance(best, tuple):
         return best
     key = os.environ.get("ODSAY_API_KEY", "").strip()
@@ -208,9 +221,12 @@ def to_yeoksam(address: str):
         return (cached["minutes"], cached["transfers"]) if cached["ok"] else None
 
     coords = geocode(address)
-    result = transit(*coords) if coords else None
+    if not coords:   # 주소 자체를 못 찾음 — 캐시해 두고 다시 묻지 않는다
+        _cache_put(address, None, None, ok=False)
+        return None
+    if not _budget_ok():   # 이번 15분 몫을 다 씀 → 판단 보류(캐시 안 함, 다음 수집 때 계산)
+        return None
+    result = transit(*coords)
     if result:
         _cache_put(address, result[0], result[1], ok=True)
-        return result
-    _cache_put(address, None, None, ok=False)
-    return None
+    return result   # 조회 실패(네이버 차단 · ODsay 한도)는 캐시하지 않아 다음에 다시 시도
