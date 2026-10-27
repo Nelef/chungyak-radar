@@ -22,9 +22,9 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import Body, FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
-from app import commute, cost, db, notify, rules, sources
+from app import commute, cost, db, ical, notify, rules, sources
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("main")
@@ -221,6 +221,19 @@ def api_notices(request: Request, all: bool = False):
         for r in rows:
             _strip_personal(r)
     return rows
+
+
+# 구글 캘린더 구독용 .ics — 로그인 대신 deploy.env의 CAL_TOKEN이 주소에 들어가야 열린다(구글이 직접 가져가므로).
+_CAL_TOKEN = os.environ.get("CAL_TOKEN", "").strip()
+
+
+@app.get("/cal/{token}.ics")
+def cal_feed(token: str):
+    if DEMO or not _CAL_TOKEN or not secrets.compare_digest(token, _CAL_TOKEN):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    body = ical.build(db.list_notices(matched_only=True), rules.load_config())
+    return Response(body, media_type="text/calendar; charset=utf-8",
+                    headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/status")
