@@ -44,7 +44,8 @@ MOCK_TIMES = {  # MOCK 모드용 대략치
 }
 
 
-_SRC = "naver_subway_mobileleader_v1"   # 계산 방식이 바뀌면 캐시를 비운다
+_SRC = "naver_subway_mobileleader_v2"   # 계산 방식이 바뀌면 캐시를 비운다
+NO_SUBWAY = 999   # 지하철+도보만으로 가는 경로가 없음(버스 필요) — 60분 초과처럼 제외된다
 
 
 def init():
@@ -136,7 +137,8 @@ def _next_weekday_8am() -> str:
 
 
 def naver(sx: float, sy: float):
-    """네이버 지도 대중교통 — 지하철+도보만인 경로 중 최단 (분, 환승횟수). 실패 · 경로 없음이면 None."""
+    """네이버 지도 대중교통 — 지하철+도보만인 경로 중 최단 (분, 환승횟수).
+    경로는 있는데 전부 버스가 섞였으면 "nosub", 조회 실패 · 경로 없음이면 None."""
     try:
         r = requests.get(
             "https://map.naver.com/p/api/directions/pubtrans",
@@ -146,15 +148,15 @@ def naver(sx: float, sy: float):
             timeout=20,
         )
         r.raise_for_status()
-        best = None
-        for p in r.json().get("paths") or []:
+        best, paths = None, r.json().get("paths") or []
+        for p in paths:
             steps = [st for leg in p.get("legs") or [] for st in leg.get("steps") or []]
             if not steps or any(st.get("type") not in ("WALKING", "SUBWAY") for st in steps):
                 continue
             n_sub = sum(1 for st in steps if st.get("type") == "SUBWAY")
             if p.get("duration") is not None and (best is None or p["duration"] < best[0]):
                 best = (int(p["duration"]), max(n_sub - 1, 0))
-        return best
+        return best or ("nosub" if paths else None)
     except Exception as e:  # noqa: BLE001
         log.warning("네이버 경로 조회 실패: %s", e)
     return None
@@ -164,7 +166,7 @@ def transit(sx: float, sy: float):
     """지하철 최단 소요시간 → (분, 환승횟수). 네이버 우선, 없으면 ODsay 지하철 전용. 실패 시 None."""
     best = naver(sx, sy)
     time.sleep(1.2)   # 네이버에 몰아서 요청하지 않게
-    if best:
+    if isinstance(best, tuple):
         return best
     key = os.environ.get("ODSAY_API_KEY", "").strip()
     if not key:
@@ -187,7 +189,7 @@ def transit(sx: float, sy: float):
             return best[0], max(best[1], 0)
     except Exception as e:  # noqa: BLE001
         log.warning("ODsay 경로 조회 실패: %s", e)
-    return None
+    return (NO_SUBWAY, 0) if best == "nosub" else None
 
 
 def to_yeoksam(address: str):

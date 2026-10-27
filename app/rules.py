@@ -220,7 +220,10 @@ def process(notices: list[dict]) -> list[dict]:
                 over = minutes > ccfg["max_minutes"]
                 mark = "⚠ " if over else ""
                 suffix = f" — {ccfg['max_minutes']}분 초과" if over else ""
-                n["tags"].insert(0, f"{mark}🚇 통근 목적지 약 {minutes}분 · 환승 {transfers}회{suffix}")
+                if minutes >= commute.NO_SUBWAY:   # 버스를 타야만 갈 수 있음(희망 조건: 지하철만)
+                    n["tags"].insert(0, "⚠ 🚌 지하철만으로는 경로 없음(버스 필요)")
+                else:
+                    n["tags"].insert(0, f"{mark}🚇 통근 목적지 약 {minutes}분 · 환승 {transfers}회{suffix}")
                 if over and ccfg.get("exclude_over") and not watch:
                     n["matched"] = False
         if watch:  # 관심단지는 통근 초과여도 남기고 맨 앞에 표시

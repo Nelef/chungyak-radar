@@ -113,7 +113,8 @@ def build(notices: list[dict], cfg: dict) -> str:
         if n.get("total_supply"):
             desc.append(f"공급: {n['total_supply']}세대")
         if n.get("commute_min"):
-            desc.append(f"통근 목적지 지하철 약 {n['commute_min']}분")
+            desc.append("지하철 경로 없음(버스 필요)" if n["commute_min"] >= 999
+                        else f"통근 목적지 지하철 약 {n['commute_min']}분")
         if n.get("url"):
             desc.append(f"공고: {n['url']}")
         desc.append(f"레이더: {rules._notice_url(n)}")
