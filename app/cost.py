@@ -606,16 +606,41 @@ def _rent_price(pdf_bytes):
     return {"deposit_manwon": best[0], "monthly_manwon": best[1], "area_m2": best[2]}
 
 
+SH_FILE = "https://www.i-sh.co.kr/main/com/file/innoFD.do?brdId={brd}&seq={seq}&fileTp={tp}&fileSeq={fs}"
+
+
+def _fetch_sh_pdf(notice):
+    """SH 게시판 공고의 첨부 중 공고문 PDF bytes(2026-10-27 — 전엔 SH 첨부를 못 받아 원문 없이 판단했음).
+    첨부 목록은 상세페이지의 initParam.downList JSON. 이름에 '공고'가 든 PDF를 우선, 없으면 큰 PDF부터."""
+    url = notice.get("url") or ""
+    r = requests.get(url, headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    m = re.search(r"initParam\.downList\s*=\s*(\[.*?\]);", r.text, re.S)
+    files = json.loads(m.group(1)) if m else []
+    pdfs = [f for f in files if str(f.get("oriFileNm", "")).lower().endswith(".pdf")]
+    pdfs.sort(key=lambda f: ("공고" not in f["oriFileNm"], -int(f.get("fileSize") or 0)))
+    for f in pdfs[:3]:
+        fr = requests.get(SH_FILE.format(brd=f.get("brdId"), seq=f.get("seq"), tp=f.get("fileTp") or "A",
+                                         fs=f.get("fileSeq")), headers={**HEADERS, "Referer": url}, timeout=60)
+        if fr.ok and fr.content[:4] == b"%PDF":
+            return fr.content
+    return None
+
+
 def _build_rent(notice, min_area=0, profile=None, on_event=None):
     aid = (notice.get("raw") or {}).get("atchFileId")
-    if not aid:
+    is_sh = str(notice.get("id", "")).startswith("board:sh:")
+    if not (aid or is_sh):
         return None
     _emit(on_event, phase="📄 공고문 다운로드 중…")
-    fr = requests.get(SOCO_FILE.format(aid=aid), headers=HEADERS, timeout=60)
-    fr.raise_for_status()
-    if fr.content[:4] != b"%PDF":
+    if aid:   # 청년안심주택 포털
+        fr = requests.get(SOCO_FILE.format(aid=aid), headers=HEADERS, timeout=60)
+        fr.raise_for_status()
+        pdf = fr.content if fr.content[:4] == b"%PDF" else None
+    else:     # SH 게시판(매입임대 · 장기전세 등)
+        pdf = _fetch_sh_pdf(notice)
+    if not pdf:
         return None
-    pdf = fr.content
     s = llm_settings()
     t = {}
     if s.get("provider"):  # 신청기간·입주·거주기간·계약금·자격조언은 LLM으로

@@ -46,7 +46,7 @@ MOCK_TIMES = {  # MOCK 모드용 대략치
 
 _SRC = "naver_subway_mobileleader_v2"   # 계산 방식이 바뀌면 캐시를 비운다
 NO_SUBWAY = 999   # 지하철+도보만으로 가는 경로가 없음(버스 필요) — 60분 초과처럼 제외된다
-# 네이버는 몰아서 조회하면 IP를 잠시 막는다(2026-10-27: 10분에 160건 → 400 Bad Request).
+# 네이버에 몰아서 조회하지 않게(2026-10-27: 160건 몰아 부른 뒤 짧은 UA가 400으로 거부됨 — 실제 크롬 UA로 해결).
 # 실제 경로 조회는 15분에 20건까지만 하고, 나머지는 다음 수집 때로 미룬다(실패도 캐시하지 않음).
 _LIVE: list = []
 _MAX_LIVE, _WINDOW = 20, 900
@@ -142,6 +142,10 @@ def geocode(address: str):
     return None
 
 
+_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/140.0 Safari/537.36")
+
+
 def _next_weekday_8am() -> str:
     d = datetime.now(timezone(timedelta(hours=9))).date() + timedelta(days=1)
     while d.weekday() >= 5:
@@ -157,7 +161,8 @@ def naver(sx: float, sy: float):
             "https://map.naver.com/p/api/directions/pubtrans",
             params={"start": f"{sx},{sy}", "goal": f"{DEST_X},{DEST_Y}", "crs": "EPSG:4326",
                     "mode": "TIME", "lang": "ko", "departureTime": _next_weekday_8am()},
-            headers={"User-Agent": "Mozilla/5.0 (Macintosh) Chrome/140", "Referer": "https://map.naver.com/"},
+            # 짧은 UA('Mozilla/5.0 (Macintosh) Chrome/140')는 2026-10-27부터 400으로 거부됨 → 실제 크롬 UA
+            headers={"User-Agent": _UA, "Referer": "https://map.naver.com/"},
             timeout=20,
         )
         r.raise_for_status()
