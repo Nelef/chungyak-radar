@@ -182,10 +182,10 @@ def naver(sx: float, sy: float):
 
 def transit(sx: float, sy: float):
     """지하철 최단 소요시간 → (분, 환승횟수). 네이버 우선, 없으면 ODsay 지하철 전용. 실패 시 None."""
-    best = naver(sx, sy)
+    nv = naver(sx, sy)   # (분, 환승) · "nosub"(버스 포함 경로만) · None(조회 실패)
     time.sleep(2.5)   # 네이버에 몰아서 요청하지 않게
-    if isinstance(best, tuple):
-        return best
+    if isinstance(nv, tuple):
+        return nv
     key = os.environ.get("ODSAY_API_KEY", "").strip()
     if not key:
         return None
@@ -207,7 +207,7 @@ def transit(sx: float, sy: float):
             return best[0], max(best[1], 0)
     except Exception as e:  # noqa: BLE001
         log.warning("ODsay 경로 조회 실패: %s", e)
-    return (NO_SUBWAY, 0) if best == "nosub" else None
+    return (NO_SUBWAY, 0) if nv == "nosub" else None
 
 
 def to_yeoksam(address: str):
