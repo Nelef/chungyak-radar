@@ -199,7 +199,7 @@ def process(notices: list[dict]) -> list[dict]:
                     if minutes > ccfg["max_minutes"]:
                         n["matched"] = False  # 목적지 1시간 초과 제외(사용자 요청)
                     else:
-                        n["tags"].insert(0, f"🚇 목적지 약 {minutes}분 · 환승 {transfers}회")
+                        n["tags"].insert(0, f"🚇 통근 목적지 약 {minutes}분 · 환승 {transfers}회")
                 else:  # 지오코딩 실패 — 거르지 않고 남기되 통근 미확인임을 표시
                     n["tags"].insert(0, "🚇 통근시간 확인 필요(주소 미확인)")
             continue
@@ -220,7 +220,7 @@ def process(notices: list[dict]) -> list[dict]:
                 over = minutes > ccfg["max_minutes"]
                 mark = "⚠ " if over else ""
                 suffix = f" — {ccfg['max_minutes']}분 초과" if over else ""
-                n["tags"].insert(0, f"{mark}🚇 목적지 약 {minutes}분 · 환승 {transfers}회{suffix}")
+                n["tags"].insert(0, f"{mark}🚇 통근 목적지 약 {minutes}분 · 환승 {transfers}회{suffix}")
                 if over and ccfg.get("exclude_over") and not watch:
                     n["matched"] = False
         if watch:  # 관심단지는 통근 초과여도 남기고 맨 앞에 표시

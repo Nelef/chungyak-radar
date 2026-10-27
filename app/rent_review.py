@@ -50,7 +50,7 @@ def _prompt(n: dict, analysis, pdf: str, cfg: dict) -> str:
     return (
         "가구가 이 임대주택 공고에 지원할 만한지 판단하라. JSON 객체 하나만 출력.\n"
         f"우리 상황: {cost._who(profile)}\n"
-        f"희망 조건: {profile.get('wish') or ''} (출퇴근: 목적지)\n"
+        f"희망 조건: {profile.get('wish') or ''} (출퇴근: 통근 목적지, 지하철 60분 넘으면 제외)\n"
         "★ 우리는 임대주택도 갈 수 있다(2026-10-27) — '임대라서'라는 이유만으로 제외 · 비추천하지 말 것. "
         "분양전환 여부 · 재당첨 제한 · 청약통장 사용 처리 같은 임대 특유의 손익은 reason에 적되, verdict는 아래 기준으로 정한다.\n"
         "판단 순서:\n"

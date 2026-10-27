@@ -1,7 +1,9 @@
 """목적지 대중교통 소요시간 계산.
 
 주소 → 좌표: 카카오 로컬 API (developers.kakao.com, REST API 키)
-좌표 → 대중교통 경로: ODsay API (lab.odsay.com, 무료 1,000회/일)
+좌표 → 대중교통 경로: 네이버 지도 대중교통(지하철+도보 경로만, 평일 08시 출발) 우선, 실패 시 ODsay 지하철 전용
+  (2026-10-27: ODsay 기본값은 버스 섞인 경로라 구리갈매가 51분으로 나왔는데 지하철로는 71~74분 →
+   사용자 기준 '지하철 1시간, 넘으면 제외'에 맞게 바꿈. 사용자가 직접 확인하는 것도 네이버)
 
 같은 주소는 DB에 캐시해서 수집 주기마다 API를 다시 태우지 않는다.
 MOCK=1이면 샘플 값으로 동작 (키 없이 파이프라인 검증용).
@@ -12,6 +14,8 @@ MOCK=1이면 샘플 값으로 동작 (키 없이 파이프라인 검증용).
 import logging
 import os
 import re
+import time
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -19,8 +23,9 @@ from app import db
 
 log = logging.getLogger("commute")
 
-DEST_NAME = "목적지"
-DEST_X, DEST_Y = 127.0364, 37.5006  # 경도, 위도
+# 실제 출근지 통근 목적지 — 2026-10-27 목적지 좌표에서 변경
+DEST_NAME = "통근 목적지"
+DEST_X, DEST_Y = 127.0329295, 37.5000693  # 경도, 위도
 
 CACHE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS commute_cache (
@@ -39,9 +44,17 @@ MOCK_TIMES = {  # MOCK 모드용 대략치
 }
 
 
+_SRC = "naver_subway_mobileleader_v1"   # 계산 방식이 바뀌면 캐시를 비운다
+
+
 def init():
     with db.conn() as c:
         c.executescript(CACHE_SCHEMA)
+    if db.get_meta("commute_src") != _SRC:
+        with db.conn() as c:
+            c.execute("DELETE FROM commute_cache")
+        db.set_meta("commute_src", _SRC)
+        log.info("통근 캐시 초기화(계산 방식 %s)", _SRC)
 
 
 def _cache_get(address: str):
@@ -115,15 +128,51 @@ def geocode(address: str):
     return None
 
 
+def _next_weekday_8am() -> str:
+    d = datetime.now(timezone(timedelta(hours=9))).date() + timedelta(days=1)
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return f"{d.isoformat()}T08:00:00"
+
+
+def naver(sx: float, sy: float):
+    """네이버 지도 대중교통 — 지하철+도보만인 경로 중 최단 (분, 환승횟수). 실패 · 경로 없음이면 None."""
+    try:
+        r = requests.get(
+            "https://map.naver.com/p/api/directions/pubtrans",
+            params={"start": f"{sx},{sy}", "goal": f"{DEST_X},{DEST_Y}", "crs": "EPSG:4326",
+                    "mode": "TIME", "lang": "ko", "departureTime": _next_weekday_8am()},
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh) Chrome/140", "Referer": "https://map.naver.com/"},
+            timeout=20,
+        )
+        r.raise_for_status()
+        best = None
+        for p in r.json().get("paths") or []:
+            steps = [st for leg in p.get("legs") or [] for st in leg.get("steps") or []]
+            if not steps or any(st.get("type") not in ("WALKING", "SUBWAY") for st in steps):
+                continue
+            n_sub = sum(1 for st in steps if st.get("type") == "SUBWAY")
+            if p.get("duration") is not None and (best is None or p["duration"] < best[0]):
+                best = (int(p["duration"]), max(n_sub - 1, 0))
+        return best
+    except Exception as e:  # noqa: BLE001
+        log.warning("네이버 경로 조회 실패: %s", e)
+    return None
+
+
 def transit(sx: float, sy: float):
-    """대중교통 최단 소요시간 → (분, 환승횟수). 실패 시 None."""
+    """지하철 최단 소요시간 → (분, 환승횟수). 네이버 우선, 없으면 ODsay 지하철 전용. 실패 시 None."""
+    best = naver(sx, sy)
+    time.sleep(1.2)   # 네이버에 몰아서 요청하지 않게
+    if best:
+        return best
     key = os.environ.get("ODSAY_API_KEY", "").strip()
     if not key:
         return None
     try:
         r = requests.get(
             "https://api.odsay.com/v1/api/searchPubTransPathT",
-            params={"SX": sx, "SY": sy, "EX": DEST_X, "EY": DEST_Y, "apiKey": key},
+            params={"SX": sx, "SY": sy, "EX": DEST_X, "EY": DEST_Y, "SearchPathType": 1, "apiKey": key},
             timeout=20,
         )
         r.raise_for_status()
