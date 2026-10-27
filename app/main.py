@@ -24,7 +24,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import Body, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
-from app import commute, cost, db, ical, notify, rules, sources
+from app import commute, cost, db, dedupe, ical, notify, rules, sources
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("main")
@@ -60,21 +60,45 @@ def run_collection() -> dict:
     db.set_meta("last_sync_counts", f"{len(processed)}건 수집 / {total_matched}건 매칭 / 신규 {new_matched}건")
     log.info("수집 완료: %d건, 매칭 %d건, 신규 %d건", len(processed), total_matched, new_matched)
     _enqueue_backfill()   # 새 공고/미분석 공고를 자동 분석 큐에 적재(직렬 처리)
+    try:  # 목록이 바뀌었으면 NAS의 Claude로 같은 모집 공고 묶기(캘린더 · 아침 알림용)
+        dedupe.refresh(db.list_notices(matched_only=True), datetime.now(KST).date())
+    except Exception as e:  # noqa: BLE001
+        log.warning("공고 묶기 실패: %s", e)
     return {"collected": len(processed), "matched": total_matched, "new": new_matched}
 
 
 def run_reminders():
-    """접수 시작 D-7/D-1, 마감일 리마인더."""
+    """접수 시작 D-7/D-1·당일, 마감일 리마인더 — 아침에 한 통으로 묶어 보낸다(2026-10-27 사용자 요청).
+    같은 모집 공고(정정·회차 등)는 Claude 묶음(dedupe)으로 한 줄로 합친다."""
     cfg = rules.load_config()
     today = datetime.now(KST).date()
-    for n in db.list_notices(matched_only=True):
+    notices = db.list_notices(matched_only=True)
+    try:
+        dedupe.refresh(notices, today)   # 묶음이 오래됐으면 갱신(Claude 없거나 실패하면 그대로)
+    except Exception as e:  # noqa: BLE001
+        log.warning("공고 묶기 갱신 실패: %s", e)
+    groups = dedupe.groups_by_id()
+    picked, keys = {}, []
+    for n in notices:
         if n.get("muted"):  # 알림 끈 공고는 리마인더도 제외
             continue
-        for suffix, msg in rules.due_reminders(n, today, cfg.get("reminders", [7, 1])):
-            key = f"{n['id']}:{suffix}"
-            if not db.already_sent(key):
-                notify.send_telegram(msg)
-                db.mark_sent(key)
+        items = [(sfx, left, what) for sfx, left, what in rules.reminder_items(n, today, cfg.get("reminders", [7, 1]))
+                 if not db.already_sent(f"{n['id']}:{sfx}")]
+        if not items:
+            continue
+        grp = groups.get(n["id"]) or {"ids": [n["id"]], "keep": n["id"], "title": ""}
+        e = picked.setdefault(tuple(grp["ids"]), {"n": n, "title": grp.get("title") or "", "whats": []})
+        if n["id"] == grp["keep"]:
+            e["n"] = n
+        e["whats"] += [(left, what) for _, left, what in items]
+        keys += [f"{n['id']}:{sfx}" for sfx, _, _ in items]
+    if not picked:
+        return
+    msgs = rules.reminder_digest([(e["n"], e["title"], e["whats"]) for e in picked.values()], today)
+    if all([notify.send_telegram(m) for m in msgs]):   # 보낸 경우에만 기록(실패하면 다음 날 다시)
+        for k in keys:
+            db.mark_sent(k)
+    log.info("아침 리마인더 1통: 공고 %d묶음, 항목 %d개", len(picked), len(keys))
 
 
 @asynccontextmanager

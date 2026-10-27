@@ -7,14 +7,15 @@ GET /cal/<CAL_TOKEN>.ics (main.py). 구글 캘린더 '다른 캘린더 → URL�
 - 필터 통과(matched) · 알림 안 끈 공고만, 임대(lh_rent·gh·'임대' 유형)는 제외 — 희망 조건이 분양만
 - config `calendar.skip_ids`: 메인 캘린더에 직접 넣은 공고(중복 방지)
 - 접수 기간이 3일 이상이면 시작일 · 마감일 두 일정으로(긴 막대 대신)
-- 같은 단지 공고가 여럿이면(이름에서 [정정공고]·[무순위]·(3차)·(공고일) 등을 떼고 비교)
+- NAS의 Claude가 묶어 둔 결과(dedupe.py)가 있으면 그걸 먼저 쓴다(대표 공고 + 짧은 제목)
+- 그 밖의 공고는 이름 규칙으로: 같은 단지 공고가 여럿이면(이름에서 [정정공고]·[무순위]·(3차)·(공고일) 등을 떼고 비교)
   · 정정공고가 섞여 있으면 가장 최근 공고 하나만 남긴다
   · 일정이 똑같은 회차(1차·3차 등)는 한 일정으로 묶는다
 """
 import re
 from datetime import date, datetime, timedelta, timezone
 
-from app import rules
+from app import dedupe, rules
 
 _RENT_SOURCES = ("lh_rent", "gh")
 _LONG_DAYS = 3   # 이보다 긴 접수 기간은 시작 · 마감 하루짜리 두 일정으로(월 보기에 긴 막대가 깔리지 않게)
@@ -77,6 +78,24 @@ def _tidy(notices: list[dict]) -> list[tuple[dict, int]]:
     return out
 
 
+def _llm_tidy(notices: list[dict]):
+    """Claude 묶음 적용 → ([(대표, 건수, 제목)], 묶음에 없는 공고)."""
+    g = dedupe.groups_by_id()
+    by, rest = {}, []
+    for n in notices:
+        grp = g.get(n["id"])
+        if grp:
+            by.setdefault(tuple(grp["ids"]), (grp, []))[1].append(n)
+        else:
+            rest.append(n)
+    out = []
+    for grp, members in by.values():
+        rep = next((m for m in members if m["id"] == grp["keep"]), None) \
+            or max(members, key=lambda m: m.get("notice_date") or "")
+        out.append((rep, len(members), grp.get("title") or ""))
+    return out, rest
+
+
 def build(notices: list[dict], cfg: dict) -> str:
     c = cfg.get("calendar") or {}
     skip = set(c.get("skip_ids") or [])
@@ -86,10 +105,11 @@ def build(notices: list[dict], cfg: dict) -> str:
     lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//chungyak-radar//ko", "CALSCALE:GREGORIAN",
              "METHOD:PUBLISH", "X-WR-CALNAME:" + _esc(c.get("name", "청약 레이더 (자동)")),
              "X-WR-TIMEZONE:Asia/Seoul", "REFRESH-INTERVAL;VALUE=DURATION:PT6H", "X-PUBLISHED-TTL:PT6H"]
-    for n, cnt in _tidy([n for n in notices if _wanted(n, skip)]):
-        name = _base_name(n["name"]) + (f" (회차 {cnt}건)" if cnt > 1 else "")
+    picked, rest = _llm_tidy([n for n in notices if _wanted(n, skip)])
+    for n, cnt, title in picked + [(n, c, "") for n, c in _tidy(rest)]:
+        name = title or (_base_name(n["name"]) + (f" (회차 {cnt}건)" if cnt > 1 else ""))
         r1 = "1순위 접수" if n.get("source") == "applyhome" else "접수"
-        desc = [f"유형: {n.get('house_kind') or '-'}"]
+        desc = [f"유형: {n.get('house_kind') or '-'}"] + ([f"같은 모집 공고 {cnt}건을 하나로 정리"] if cnt > 1 else [])
         if n.get("total_supply"):
             desc.append(f"공급: {n['total_supply']}세대")
         if n.get("commute_min"):

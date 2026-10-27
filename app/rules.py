@@ -4,6 +4,7 @@ config.yaml 기준으로 관심 지역을 거르고,
 두 사람 상황(서울 2년 거주·각자 세대주·혼인신고 전·생애최초)에 맞는
 행동 태그를 공고에 붙인다.
 """
+import html
 import os
 from datetime import date
 from urllib.parse import quote
@@ -317,8 +318,8 @@ def parse_date(s):
         return None
 
 
-def due_reminders(n: dict, today: date, reminder_days: list[int]) -> list[tuple[str, str]]:
-    """리마인더 대상이면 [(alert_key_suffix, message)] 반환."""
+def reminder_items(n: dict, today: date, reminder_days: list[int]) -> list[tuple[str, int, str]]:
+    """리마인더 대상이면 [(alert_key_suffix, 남은 일수, 무엇)] 반환."""
     out = []
     targets = [
         ("특별공급 접수 시작", parse_date(n.get("sp_start")), "sp_start"),
@@ -330,5 +331,34 @@ def due_reminders(n: dict, today: date, reminder_days: list[int]) -> list[tuple[
             continue
         left = (dt - today).days
         if left in reminder_days or left == 0:
-            out.append((f"{key}:d{left}", reminder_message(n, left, label)))
+            out.append((f"{key}:d{left}", left, label))
     return out
+
+
+def due_reminders(n: dict, today: date, reminder_days: list[int]) -> list[tuple[str, str]]:
+    """리마인더 대상이면 [(alert_key_suffix, message)] 반환(공고 1건씩 — 아침 묶음은 reminder_digest)."""
+    return [(sfx, reminder_message(n, left, label)) for sfx, left, label in reminder_items(n, today, reminder_days)]
+
+
+def reminder_digest(entries: list, today: date, limit: int = 3800) -> list[str]:
+    """아침 리마인더를 한 통으로(2026-10-27 사용자 요청: 공고마다 따로 오면 너무 많음).
+    entries = [(대표 공고, 짧은 제목, [(남은 일수, 무엇)])]. D-day별로 묶고, 길면 나눠 보낸다."""
+    by_day: dict = {}
+    for n, title, whats in entries:
+        for left, what in whats:
+            by_day.setdefault(left, {}).setdefault(n["id"], (n, title, []))[2].append(what)
+    lines = [f"⏰ <b>청약 일정 알림 · {today.month}/{today.day}</b>"]
+    for left in sorted(by_day):
+        lines.append("")
+        lines.append("<b>오늘</b>" if left == 0 else f"<b>D-{left}</b>")
+        for n, title, whats in by_day[left].values():
+            lines.append(f'• <a href="{_notice_url(n)}">{html.escape(title or n["name"])}</a> — '
+                         + " · ".join(dict.fromkeys(whats)))
+    lines += ["", f'<a href="{_dash_url()}">대시보드에서 전체 보기</a>']
+    msgs, cur = [], ""
+    for line in lines:
+        if cur and len(cur) + len(line) + 1 > limit:
+            msgs.append(cur)
+            cur = ""
+        cur = f"{cur}\n{line}" if cur else line
+    return msgs + [cur]
