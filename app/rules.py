@@ -132,6 +132,13 @@ def build_tags(n: dict, cfg: dict) -> list[str]:
     if flags.get("분양가상한제"):
         tags.append("분상제 — 시세 대비 저렴, 전매·실거주 의무 확인")
 
+    if n.get("source") == "applyhome_opt" or name.startswith("[임의공급]"):
+        # 임의공급(2026-10-28 추가): 무순위 뒤 남은 세대를 사업주체가 공급 — 통장 · 무주택 요건 없음.
+        # 다만 계약하면 분양권 = 유주택이라 공공분양(입주까지 무주택 유지)과 충돌할 수 있다.
+        tags.append("임의공급 — 청약통장 · 무주택 불필요(당첨돼도 통장 유지). "
+                    "단 계약하면 분양권 = 유주택 → 공공분양 무주택 요건과 충돌 가능, 공고문 확인")
+        return tags
+
     if n.get("source") == "applyhome_remndr" or name.startswith("[무순위]"):
         # 무순위(줍줍)는 청약통장을 안 쓰므로 당첨·포기해도 통장 유지 → 통장 리스크 0.
         # 다만 규제지역 주택이면 당첨 시 재당첨 제한이 걸릴 수 있어 공고문 확인이 필요.

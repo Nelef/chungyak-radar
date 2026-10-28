@@ -123,7 +123,7 @@ def _geocode_candidates(address: str):
     head = " ".join(address.split(" ")[:2])
     for inner in re.findall(r"[(（]([^()（）]*)[)）]", address):
         q = re.sub(r"\s*(일원|일대|외\s*\d*\s*필지).*$", "", inner).replace("번지", "").strip()
-        if re.search(r"\d", q):
+        if re.search(r"(동|리|가|로|길)\s*\d", q):   # 지번 · 도로명 주소일 때만(블록명 'M1BL' 같은 건 제외)
             add(q if q.startswith(head.split(" ")[0]) else f"{head} {q}")
     cleaned = re.sub(r"[(（\[].*", "", address)          # 괄호 이후 제거
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
@@ -162,7 +162,7 @@ def _next_weekday_8am() -> str:
 
 def naver(sx: float, sy: float):
     """네이버 지도 대중교통 — 지하철+도보만인 경로 중 최단 (분, 환승횟수).
-    경로는 있는데 전부 버스가 섞였으면 "nosub", 조회 실패 · 경로 없음이면 None."""
+    경로는 있는데 전부 버스가 섞였으면 ("nosub", 버스 포함 최단 분), 조회 실패 · 경로 없음이면 None."""
     try:
         r = requests.get(
             "https://map.naver.com/p/api/directions/pubtrans",
@@ -173,15 +173,17 @@ def naver(sx: float, sy: float):
             timeout=20,
         )
         r.raise_for_status()
-        best, paths = None, r.json().get("paths") or []
+        best, best_any, paths = None, None, r.json().get("paths") or []
         for p in paths:
+            if p.get("duration") is not None and (best_any is None or p["duration"] < best_any):
+                best_any = int(p["duration"])
             steps = [st for leg in p.get("legs") or [] for st in leg.get("steps") or []]
             if not steps or any(st.get("type") not in ("WALKING", "SUBWAY") for st in steps):
                 continue
             n_sub = sum(1 for st in steps if st.get("type") == "SUBWAY")
             if p.get("duration") is not None and (best is None or p["duration"] < best[0]):
                 best = (int(p["duration"]), max(n_sub - 1, 0))
-        return best or ("nosub" if paths else None)
+        return best or (("nosub", best_any) if paths else None)
     except Exception as e:  # noqa: BLE001
         log.warning("네이버 경로 조회 실패: %s", e)
     return None
@@ -189,9 +191,10 @@ def naver(sx: float, sy: float):
 
 def transit(sx: float, sy: float):
     """지하철 최단 소요시간 → (분, 환승횟수). 네이버 우선, 없으면 ODsay 지하철 전용. 실패 시 None."""
-    nv = naver(sx, sy)   # (분, 환승) · "nosub"(버스 포함 경로만) · None(조회 실패)
+    nv = naver(sx, sy)   # (분, 환승) · ("nosub", 버스 포함 최단 분) · None(조회 실패)
     time.sleep(2.5)   # 네이버에 몰아서 요청하지 않게
-    if isinstance(nv, tuple):
+    nosub = isinstance(nv, tuple) and nv[0] == "nosub"
+    if isinstance(nv, tuple) and not nosub:
         return nv
     key = os.environ.get("ODSAY_API_KEY", "").strip()
     if not key:
@@ -203,18 +206,21 @@ def transit(sx: float, sy: float):
             timeout=20,
         )
         r.raise_for_status()
-        paths = (r.json().get("result") or {}).get("path") or []
+        res = r.json().get("result") or {}
+        # 도시 간(searchType=1)이면 SRT 등 열차 구간만의 시간이 와서 터무니없이 짧다(평택 고덕 22분) → 버림
+        paths = (res.get("path") or []) if res.get("searchType", 0) == 0 else []
         best = None
         for p in paths[:5]:
             info = p.get("info") or {}
             t = info.get("totalTime")
             if t is not None and (best is None or t < best[0]):
                 best = (int(t), int(info.get("busTransitCount", 0)) + int(info.get("subwayTransitCount", 0)) - 1)
-        if best:
+        # 네이버가 버스 포함 경로만 줬다면, 지하철만으로 그보다 빠를 수는 없다 → 더 짧으면 잘못된 값
+        if best and not (nosub and nv[1] and best[0] < nv[1]):
             return best[0], max(best[1], 0)
     except Exception as e:  # noqa: BLE001
         log.warning("ODsay 경로 조회 실패: %s", e)
-    return (NO_SUBWAY, 0) if nv == "nosub" else None
+    return (NO_SUBWAY, 0) if nosub else None
 
 
 def to_yeoksam(address: str):

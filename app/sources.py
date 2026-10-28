@@ -116,8 +116,18 @@ def fetch_applyhome(service_key: str) -> list[dict]:
     return out
 
 
-# ------------------------------------------------------- 청약홈 무순위/잔여
+# ------------------------------------------------------- 청약홈 무순위/잔여 · 임의공급
 def fetch_applyhome_remndr(service_key: str) -> list[dict]:
+    return _fetch_remndr_like(service_key, "getRemndrLttotPblancDetail", "applyhome_remndr", "[무순위] ", "무순위/잔여")
+
+
+def fetch_applyhome_opt(service_key: str) -> list[dict]:
+    """임의공급 — 무순위 뒤에도 남은 세대를 사업주체가 공급(청약통장 · 무주택 불필요). 응답 형식은 무순위와 같다.
+    2026-10-28 사용자 요청: 마곡스카이온(임의공급)이 레이더에 안 잡혔음."""
+    return _fetch_remndr_like(service_key, "getOPTLttotPblancDetail", "applyhome_opt", "[임의공급] ", "임의공급")
+
+
+def _fetch_remndr_like(service_key: str, endpoint: str, src: str, prefix: str, kind: str) -> list[dict]:
     since = (datetime.now() - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
     params = {
         "page": 1,
@@ -125,7 +135,7 @@ def fetch_applyhome_remndr(service_key: str) -> list[dict]:
         "serviceKey": service_key,
         "cond[RCRIT_PBLANC_DE::GTE]": since,
     }
-    r = requests.get(f"{APPLYHOME_BASE}/getRemndrLttotPblancDetail", params=params, timeout=30)
+    r = requests.get(f"{APPLYHOME_BASE}/{endpoint}", params=params, timeout=30)
     r.raise_for_status()
     items = r.json().get("data", [])
     out = []
@@ -134,10 +144,10 @@ def fetch_applyhome_remndr(service_key: str) -> list[dict]:
         if not no:
             continue
         out.append({
-            "id": f"applyhome_remndr:{no}",
-            "source": "applyhome_remndr",
-            "name": "[무순위] " + _get(it, "HOUSE_NM", default="(이름 없음)"),
-            "house_kind": _get(it, "HOUSE_DTL_SECD_NM", "HOUSE_SECD_NM", default="무순위/잔여"),
+            "id": f"{src}:{no}",
+            "source": src,
+            "name": prefix + _get(it, "HOUSE_NM", default="(이름 없음)"),
+            "house_kind": _get(it, "HOUSE_DTL_SECD_NM", "HOUSE_SECD_NM", default=kind),
             "region": _get(it, "SUBSCRPT_AREA_CODE_NM"),
             "address": _get(it, "HSSPLY_ADRES"),
             "total_supply": _get(it, "TOT_SUPLY_HSHLDCO"),
@@ -575,7 +585,7 @@ def collect_all() -> list[dict]:
     lh_key = os.environ.get("LH_API_KEY", "").strip()
 
     if ah_key:
-        for fn in (fetch_applyhome, fetch_applyhome_remndr, fetch_pbl_pvt_rent):
+        for fn in (fetch_applyhome, fetch_applyhome_remndr, fetch_applyhome_opt, fetch_pbl_pvt_rent):
             notices += _run_source(fn.__name__, fn, ah_key)
     else:
         log.warning("APPLYHOME_API_KEY 미설정 — 청약홈 수집 건너뜀")

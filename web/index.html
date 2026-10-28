@@ -287,7 +287,7 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
     <div id="catTabs" class="tabs" role="group" aria-label="공고 종류 필터">
       <button data-c="all" aria-pressed="true" type="button">전체</button>
       <button data-c="sale" aria-pressed="false" type="button">분양</button>
-      <button data-c="remndr" aria-pressed="false" type="button">무순위</button>
+      <button data-c="remndr" aria-pressed="false" type="button">무순위·임의</button>
       <button data-c="rent" aria-pressed="false" type="button">임대</button>
     </div>
     <div id="statTabs" class="tabs" role="group" aria-label="공고 상태 필터">
@@ -325,9 +325,9 @@ let GUEST = false;   // 게스트(읽기 전용) 모드 — 서버에서도 쓰�
 let AREA_ON = true, AREA_VAL = 30, CASH_ON = false, CASH_VAL = 20000; // CASH_VAL은 만원
 let CM_ON = true, CM_VAL = 60;  // 통근 목적지 지하철 통근 N분 이내(기본 켜짐)
 const $ = s => document.querySelector(s);
-/* 공고 종류: 분양(applyhome·lh) / 무순위(applyhome_remndr) / 임대(applyhome_rent·board) */
+/* 공고 종류: 분양(applyhome·lh) / 무순위·임의공급(applyhome_remndr·applyhome_opt) / 임대(applyhome_rent·board) */
 function catOf(n){
-  if(n.source==='applyhome_remndr') return 'remndr';
+  if(n.source==='applyhome_remndr' || n.source==='applyhome_opt') return 'remndr';   // 임의공급도 무순위 탭
   if((n.flags||{})['분양']) return 'sale';   // 분양 플래그(중기 장기근속 특공·SH 분양게시판 등)는 분양 탭
   if(['applyhome_rent','board','lh_rent','gh'].includes(n.source)) return 'rent';
   return 'sale';

@@ -36,6 +36,7 @@ class LLMDownError(Exception):
 
 APPLYHOME_MDL = "https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1/getAPTLttotPblancMdl"
 REMNDR_MDL = "https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1/getRemndrLttotPblancMdl"
+OPT_MDL = "https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1/getOPTLttotPblancMdl"   # 임의공급
 DETAIL_URL = "https://www.applyhome.co.kr/ai/aia/selectAPTLttotPblancDetail.do"
 REMNDR_DETAIL = "https://www.applyhome.co.kr/ai/aia/selectAPTRemndrLttotPblancDetailView.do"
 LH_LIST = "https://apply.lh.or.kr/lhapply/apply/wt/wrtanc/selectWrtancList.do"
@@ -939,7 +940,7 @@ def _sale_prompt(profile, remndr=False):
     )
 
 
-def _build(notice, regulated, ccfg, profile=None, remndr=False, on_event=None):
+def _build(notice, regulated, ccfg, profile=None, remndr=False, on_event=None, mdl=None):
     ah_key = os.environ.get("APPLYHOME_API_KEY", "").strip()
     if not ah_key:
         return None
@@ -948,7 +949,7 @@ def _build(notice, regulated, ccfg, profile=None, remndr=False, on_event=None):
     pbn = raw.get("PBLANC_NO") or hmn
 
     _emit(on_event, phase="💰 분양가 조회 중…")
-    all_prices = _fetch_prices(hmn, ah_key, REMNDR_MDL if remndr else APPLYHOME_MDL)
+    all_prices = _fetch_prices(hmn, ah_key, mdl or (REMNDR_MDL if remndr else APPLYHOME_MDL))
     if not all_prices:
         return None
     min_area = float(ccfg.get("min_area_m2") or 0)
@@ -1190,11 +1191,12 @@ def enrich(notice, cfg, force=False, on_event=None):
     try:
         src = notice.get("source")
         min_area = float(ccfg.get("min_area_m2") or 0)
-        if src in ("applyhome", "applyhome_remndr"):
+        if src in ("applyhome", "applyhome_remndr", "applyhome_opt"):
             flags = notice.get("flags") or {}
             regulated = bool(flags.get("투기과열") or flags.get("조정대상"))
             result = _build(notice, regulated, ccfg, (cfg or {}).get("profile"),
-                            remndr=(src == "applyhome_remndr"), on_event=_intercept)
+                            remndr=(src in ("applyhome_remndr", "applyhome_opt")), on_event=_intercept,
+                            mdl=OPT_MDL if src == "applyhome_opt" else None)
         elif src == "lh":  # LH 공공분양·신혼희망타운(청약홈 API에 없어 공고문 PDF로 분석)
             result = _build_lh_sale(notice, ccfg, (cfg or {}).get("profile"), _intercept)
         else:
