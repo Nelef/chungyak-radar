@@ -127,8 +127,16 @@ def fetch_applyhome_opt(service_key: str) -> list[dict]:
     return _fetch_remndr_like(service_key, "getOPTLttotPblancDetail", "applyhome_opt", "[임의공급] ", "임의공급")
 
 
+def _ymd(v):
+    """'20261015' → '2026-10-15' (임의공급 API는 날짜에 하이픈이 없다). 이미 형식이 맞으면 그대로."""
+    v = str(v or "").strip()
+    return f"{v[:4]}-{v[4:6]}-{v[6:8]}" if len(v) == 8 and v.isdigit() else (v or None)
+
+
 def _fetch_remndr_like(service_key: str, endpoint: str, src: str, prefix: str, kind: str) -> list[dict]:
     since = (datetime.now() - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+    if "OPT" in endpoint:   # 임의공급은 날짜가 'YYYYMMDD' 문자열이라 비교값도 같은 형식이어야 기간 필터가 먹는다
+        since = since.replace("-", "")
     params = {
         "page": 1,
         "perPage": 200,
@@ -151,10 +159,10 @@ def _fetch_remndr_like(service_key: str, endpoint: str, src: str, prefix: str, k
             "region": _get(it, "SUBSCRPT_AREA_CODE_NM"),
             "address": _get(it, "HSSPLY_ADRES"),
             "total_supply": _get(it, "TOT_SUPLY_HSHLDCO"),
-            "notice_date": _get(it, "RCRIT_PBLANC_DE"),
-            "r1_start": _get(it, "SUBSCRPT_RCEPT_BGNDE", "RCEPT_BGNDE"),
-            "r1_end": _get(it, "SUBSCRPT_RCEPT_ENDDE", "RCEPT_ENDDE"),
-            "winner_date": _get(it, "PRZWNER_PRESNATN_DE"),
+            "notice_date": _ymd(_get(it, "RCRIT_PBLANC_DE")),
+            "r1_start": _ymd(_get(it, "SUBSCRPT_RCEPT_BGNDE", "RCEPT_BGNDE")),
+            "r1_end": _ymd(_get(it, "SUBSCRPT_RCEPT_ENDDE", "RCEPT_ENDDE")),
+            "winner_date": _ymd(_get(it, "PRZWNER_PRESNATN_DE")),
             "url": _get(it, "PBLANC_URL"),
             "flags": {},
             "raw": it,
