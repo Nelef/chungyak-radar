@@ -365,7 +365,7 @@ def _chain(steps, on_event=None):
     errs = []
     for i, (label, k, fn) in enumerate(live):
         if i:
-            _emit(on_event, phase=f"🤖 {live[i - 1][0]} 실패 → {label}로 분석 중…")
+            _emit(on_event, phase=f"🤖 {label}로 분석 중…")   # 까닭(실패 · 한도)은 화면에 내지 않는다(사용자 지정 2026-11-02)
         try:
             out = fn()
             if i:
