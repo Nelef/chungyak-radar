@@ -13,6 +13,7 @@ LLM 미설정이면 공고문 추출을 건너뛰고 계약금 가정치(config)
 공고문이 PDF가 아니면(HWP 등) 조용히 건너뛴다. 결과는 공고ID별 DB 캐시.
 """
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -21,6 +22,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -329,12 +331,57 @@ def _openai_terms(pdf_bytes, s, prompt=None, keywords=None, on_event=None):
     return _parse_json(r.json()["choices"][0]["message"]["content"])
 
 
-# --------------------------------------------------- Gemini (무료 티어, 네이티브 API)
-def _gemini_generate(prompt, s, on_event=None, max_tokens=4000):
-    """Gemini generateContent(무료). thinkingBudget:0으로 사고 토큰을 꺼 JSON을 바로 받는다.
-    스트리밍은 안 쓰고(백그라운드 잡이라 불필요) 단계만 표시."""
-    key = s.get("api_key") or os.environ.get("GEMINI_API_KEY", "")
-    model = s.get("model") or "gemini-flash-latest"
+# --------------------------------------------------- LLM 대체 순서(2026-11-02)
+# 사용자 지정 "청약레이더도 우리 키들을 모두 쓸 수 있도록": 한 곳이 한도 · 장애면 다음 후보로 넘긴다.
+#   공고 분석(_gemini_generate): Gemini 무료 키 → Claude 주 → Claude 예비 → Codex → Gemini 유료 키(월 한도 ₩1,000, 맨 마지막)
+#   Claude 쓰는 일(_claude_generate — 공고 묶기 · 임대 판단): Claude 주 → Claude 예비 → Codex → Gemini(uyai 의 무료 키)
+# 유료 키(GEMINI_API_KEY · 설정의 api_key)는 AI Studio 프로젝트 'Gemini PAID - chungyak radar'(Tier 1 후불)라 쓴 만큼 청구된다
+# (예전 이름 'Gemini free Project' 는 이름만 무료였다 — 28일 ₩1,060). 무료 키(GEMINI_FREE_API_KEY)는 결제 없는 'uyai fallback FREE' 프로젝트.
+# Codex · uyai Gemini 는 uyai 컨테이너의 LiteLLM(ALT_LLM_URL · ALT_LLM_KEY, dart-deck server/alt_llm.py)에 같은 claude -p 를 붙여 모델만 바꾼다.
+# 한도(429 · usage limit) · 인증 실패가 난 후보는 풀릴 때까지(Claude 한도 이벤트의 resetsAt, 없으면 1시간 · 인증 6시간) 건너뛴다.
+_BLOCK = {}
+_LIMIT_RE = re.compile(r"usage limit|limit reached|hit your (?:usage )?limit|rate[ _-]?limit|\b429\b|\b529\b|quota|overloaded|out of (?:extra )?usage|credit balance|resource.?exhausted|too many requests", re.I)
+_AUTH_RE = re.compile(r"\b401\b|\b403\b|unauthori[sz]ed|authentication|oauth|invalid[^\n]{0,20}(?:token|key)|(?:token|key)[^\n]{0,20}(?:expired|revoked|invalid)", re.I)
+
+
+def _blocked(k):
+    return _BLOCK.get(k, 0) > time.time()
+
+
+def _block(k, label, why, until=0):
+    now = time.time()
+    _BLOCK[k] = until if until and until > now else now + (6 * 3600 if why == "auth" else 3600)
+    log.warning("%s %s — %s까지 건너뜀", label, "인증 실패" if why == "auth" else "사용량 한도", time.strftime("%m-%d %H:%M", time.localtime(_BLOCK[k])))
+
+
+def _why(msg):
+    m = str(msg or "")
+    return "limit" if _LIMIT_RE.search(m) else "auth" if _AUTH_RE.search(m) else ""
+
+
+def _chain(steps, on_event=None):
+    """steps = [(이름, 막기 열쇠, 부르는 함수)] — 앞에서부터, 막힌 것은 건너뛰고 실패하면 다음으로. 다 실패하면 LLMDownError"""
+    live = [x for x in steps if not _blocked(x[1])] or sorted(steps, key=lambda x: _BLOCK.get(x[1], 0))[:1]
+    errs = []
+    for i, (label, k, fn) in enumerate(live):
+        if i:
+            _emit(on_event, phase=f"🤖 {live[i - 1][0]} 실패 → {label}로 분석 중…")
+        try:
+            out = fn()
+            if i:
+                log.info("LLM 대체: %s 사용", label)
+            return out
+        except LLMDownError as e:
+            errs.append(f"{label}: {str(e)[:160]}")
+            w = _why(e)
+            if w:
+                _block(k, label, w)
+    raise LLMDownError(" / ".join(errs) or "쓸 수 있는 LLM 없음")
+
+
+# --------------------------------------------------- Gemini (네이티브 API)
+def _gemini_call(key, model, prompt, max_tokens):
+    """generateContent 한 번. thinkingBudget:0으로 사고 토큰을 꺼 JSON을 바로 받는다(백그라운드 잡이라 스트리밍 안 씀)"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     body = {"contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0, "maxOutputTokens": max_tokens,
@@ -342,73 +389,125 @@ def _gemini_generate(prompt, s, on_event=None, max_tokens=4000):
     try:
         r = requests.post(url, headers={"x-goog-api-key": key}, json=body, timeout=180)
         r.raise_for_status()
+    except requests.exceptions.HTTPError as e:   # 키가 찍히지 않게 상태 · 본문만
+        raise LLMDownError(f"Gemini HTTP {e.response.status_code} {e.response.text[:160]}") from None
     except requests.exceptions.RequestException as e:
-        # 무료 티어 한도(429)·장애 시 개인 Claude 구독으로 한 번 더. 토큰이 없으면 그대로 실패.
-        if claude_available():
-            log.warning("Gemini 실패(%s) → Claude 폴백", e)
-            return _claude_generate(prompt, on_event)
-        raise LLMDownError(str(e)) from e
+        raise LLMDownError(f"Gemini {type(e).__name__}") from None
     try:
         return r.json()["candidates"][0]["content"]["parts"][0]["text"]
     except (KeyError, IndexError):
         return ""
 
 
-# --------------------------------------------------- Claude (개인 구독 폴백, claude -p 헤드리스)
-# 법숲(finlaw-rag) src/llm.mjs claudeJSON()과 같은 방식. ★ 토큰은 개인(user) 구독 토큰만 쓴다.
+def _gemini_generate(prompt, s, on_event=None, max_tokens=4000):
+    """공고 분석 · Q&A — Gemini 무료 → Claude 주 · 예비 → Codex → Gemini 유료(_chain)"""
+    model = s.get("model") or "gemini-flash-latest"
+    paid = s.get("api_key") or os.environ.get("GEMINI_API_KEY", "")
+    free = os.environ.get("GEMINI_FREE_API_KEY", "")
+    steps = []
+    if free and free != paid:
+        steps.append(("Gemini 무료", "g-free", lambda: _gemini_call(free, model, prompt, max_tokens)))
+    steps += _cc_steps(prompt, on_event, 180, with_gemini=False)
+    if paid:
+        steps.append(("Gemini 유료", "g-paid", lambda: _gemini_call(paid, model, prompt, max_tokens)))
+    return _chain(steps, on_event)
+
+
+# --------------------------------------------------- Claude Code(claude -p 헤드리스) — Claude 구독 · Codex · uyai Gemini
+# 법숲(finlaw-rag) src/llm.mjs claudeJSON()과 같은 방식. ★ 토큰은 개인 구독 토큰만 쓴다.
 # 개발 맥의 기본 claude 로그인은 기본 계정이라, 토큰이 없을 때 기본 로그인으로 넘어가면
-# 기본 계정으로 과금된다(2026-10-13 법숲 사고). 그래서 토큰이 없으면 아예 호출하지 않는다.
-# 토큰은 이미지에 굽지 않고 finalize.sh가 NAS의 claude.env를 --env-file로 물린다.
-_CLAUDE_TOKEN_ENVS = ("CHUNGYAK_CLAUDE_TOKEN", "FINLAW_CLAUDE_TOKEN")
+# 기본 계정으로 과금된다(2026-10-13 법숲 사고). 그래서 토큰이 없으면 아예 호출하지 않는다(대체 엔진은 --bare 라 로그인을 읽지 않는다).
+# 토큰은 이미지에 굽지 않고 finalize.sh가 NAS의 claude.env(법숲 것 공유) · alt_client.env를 --env-file로 물린다.
+_CLAUDE_TOKEN_ENVS = ("CHUNGYAK_CLAUDE_TOKEN", "FINLAW_CLAUDE_TOKEN", "FINLAW_CLAUDE_TOKEN_2")
 
 
-def _claude_token():
+def _claude_tokens():
+    out = []
     for k in _CLAUDE_TOKEN_ENVS:
-        if (os.environ.get(k) or "").strip():
-            return os.environ[k].strip()
-    return ""
+        t = (os.environ.get(k) or "").strip()
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def _alt_ready():
+    return bool(os.environ.get("ALT_LLM_URL") and os.environ.get("ALT_LLM_KEY"))
 
 
 def claude_available():
-    return bool(_claude_token() and shutil.which("claude"))
+    return bool((_claude_tokens() or _alt_ready()) and shutil.which("claude"))
 
 
-def _claude_generate(prompt, on_event=None, timeout=180):
-    token, exe = _claude_token(), shutil.which("claude")
-    if not (token and exe):
-        raise LLMDownError("Claude 폴백 불가(개인 토큰 또는 claude CLI 없음)")
-    cfg_dir = os.environ.get("CHUNGYAK_CLAUDE_CONFIG_DIR", "/data/claude-config")
+def _cc_run(prompt, timeout, token=None, alt=None, label="Claude", key=""):
+    """claude -p 한 번 — token(Claude 구독) 또는 alt('codex' · 'gemini', uyai LiteLLM)"""
+    exe = shutil.which("claude")
+    if not exe:
+        raise LLMDownError("claude CLI 없음")
+    cfg_dir = os.environ.get("CHUNGYAK_CLAUDE_CONFIG_DIR", "/data/claude-config") + ("-alt" if alt else "")
     os.makedirs(cfg_dir, exist_ok=True)
     # 부모 env(ANTHROPIC_*·다른 API 키·텔레그램 토큰)를 넘기지 않고 필요한 것만 새로 만든다.
     env = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        "HOME": cfg_dir, "LANG": "C.UTF-8",
-        "CLAUDE_CODE_OAUTH_TOKEN": token, "CLAUDE_CONFIG_DIR": cfg_dir,
+        "HOME": cfg_dir, "LANG": "C.UTF-8", "CLAUDE_CONFIG_DIR": cfg_dir,
         "DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
         "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS": "1",
     }
-    args = [exe, "-p", "표준입력으로 받은 요청을 그대로 수행하라.",
-            "--output-format", "json", "--model", os.environ.get("CHUNGYAK_CLAUDE_MODEL", "sonnet"),
+    args = [exe, "-p", "표준입력으로 받은 요청을 그대로 수행하라.", "--output-format", "stream-json", "--verbose",
             "--tools", "", "--no-session-persistence", "--disable-slash-commands", "--setting-sources", "",
             "--system-prompt", "너는 한국 청약·임대 공고문 분석 도우미다. 요청이 JSON을 원하면 JSON만 출력한다."]
-    _emit(on_event, phase="🤖 Gemini 응답 없음 → Claude로 분석 중…")
+    if alt:
+        env.update({"ANTHROPIC_BASE_URL": os.environ["ALT_LLM_URL"], "ANTHROPIC_API_KEY": os.environ["ALT_LLM_KEY"]})
+        args += ["--bare", "--model", f"alt-{alt}"]
+    else:
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+        args += ["--model", os.environ.get("CHUNGYAK_CLAUDE_MODEL", "sonnet")]
     work = tempfile.mkdtemp(prefix="cr-claude-")  # 빈 cwd — CLAUDE.md 등이 읽히지 않게
     try:
         p = subprocess.run(args, input=prompt, capture_output=True, text=True,
                            timeout=timeout, cwd=work, env=env)
     except subprocess.TimeoutExpired as e:
-        raise LLMDownError(f"Claude 시간 초과({timeout}s)") from e
+        raise LLMDownError(f"{label} 시간 초과({timeout}s)") from e
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    try:
-        j = json.loads(p.stdout)
-    except ValueError as e:
-        raise LLMDownError(f"Claude 출력 파싱 실패(code {p.returncode}): {(p.stdout or p.stderr)[:200]}") from e
+    j = None
+    for ln in p.stdout.splitlines():
+        try:
+            o = json.loads(ln)
+        except ValueError:
+            continue
+        if o.get("type") == "result":
+            j = o
+        # 구독 한도(5시간 · 주간)가 찼다 — 이번 답은 받되(추가 사용) 다음부터는 다른 후보로. 모델별 한도는 막지 않는다
+        ri = o.get("rate_limit_info") or {}
+        if o.get("type") == "rate_limit_event" and not alt and ri.get("status") == "rejected" and not re.search(r"opus|sonnet", str(ri.get("rateLimitType") or "")):
+            _block(key, label, "limit", ri.get("resetsAt") or 0)
+    if j is None:
+        raise LLMDownError(f"{label} 출력 파싱 실패(code {p.returncode}): {(p.stderr or p.stdout)[-200:]}")
     if j.get("is_error"):
-        raise LLMDownError("Claude 오류: " + str(j.get("result"))[:200])
-    log.info("Claude 폴백 사용 (%.1fs, $%s)", (j.get("duration_ms") or 0) / 1000, j.get("total_cost_usd"))
+        raise LLMDownError(f"{label} 오류: " + str(j.get("result"))[:200])
+    log.info("%s 사용 (%.1fs, $%s)", label, (j.get("duration_ms") or 0) / 1000, j.get("total_cost_usd"))
     return str(j.get("result") or "")
+
+
+def _cc_steps(prompt, on_event, timeout, with_gemini=True):
+    steps = []
+    for i, t in enumerate(_claude_tokens()):
+        k = "c-" + hashlib.sha256(t.encode()).hexdigest()[:12]; nm = "Claude" if not i else "Claude 예비"
+        steps.append((nm, k, lambda t=t, k=k, nm=nm: _cc_run(prompt, timeout, token=t, label=nm, key=k)))
+    if _alt_ready():
+        steps.append(("Codex", "codex", lambda: _cc_run(prompt, timeout, alt="codex", label="Codex", key="codex")))
+        if with_gemini:
+            steps.append(("Gemini(uyai)", "gemini", lambda: _cc_run(prompt, timeout, alt="gemini", label="Gemini(uyai)", key="gemini")))
+    return steps
+
+
+def _claude_generate(prompt, on_event=None, timeout=180):
+    """Claude 쓰는 일(공고 묶기 · 임대 판단) — Claude 주 → 예비 → Codex → Gemini(uyai)"""
+    steps = _cc_steps(prompt, on_event, timeout)
+    if not steps:
+        raise LLMDownError("Claude 폴백 불가(개인 토큰 · 대체 엔진 없음)")
+    return _chain(steps, on_event)
 
 
 def _gemini_terms(pdf_bytes, s, prompt=None, keywords=None, on_event=None):
