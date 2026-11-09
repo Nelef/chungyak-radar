@@ -393,10 +393,10 @@ function card(n){
             onkeydown="if(event.key==='Enter')saveMemo('${n.id}', this.value)"
             onblur="saveMemo('${n.id}', this.value)">`
         : `<div class="memo${n.memo?'':' empty'}" onclick="editMemo('${n.id}')" title="클릭해서 메모 편집">📝 ${n.memo?esc(n.memo):'메모 추가…'}</div>`);
-  // 임대: NAS Claude의 '지원할 만한가 · 59㎡↑' 판단(rent_review) — 한 줄, 누르면 이유 펼침
+  // 임대: NAS Claude의 '지원할 만한가 · 기준 면적(49㎡)↑' 판단(rent_review) — 한 줄, 누르면 이유 펼침
   const rv = n.rent_review;
   const rvIc = rv ? ({'추천':'✅','검토':'🤔','비추천':'👎','제외':'⛔'}[rv.verdict]||'⏳') : '';
-  const review = rv ? `<details class="rvw"><summary>${rvIc} Claude 판단: <b>${esc(rv.verdict)}</b>${rv.has_59===false?' · 59㎡↑ 없음':(rv.area_59_types?' · '+esc(rv.area_59_types):'')}</summary>${esc(rv.reason||'')}${rv.who?'<br>👥 '+esc(rv.who):''}</details>` : '';
+  const review = rv ? `<details class="rvw"><summary>${rvIc} Claude 판단: <b>${esc(rv.verdict)}</b>${(rv.has_area??rv.has_59)===false?` · ${rv.min_area||59}㎡↑ 없음`:((rv.area_types||rv.area_59_types)?' · '+esc(rv.area_types||rv.area_59_types):'')}</summary>${esc(rv.reason||'')}${rv.who?'<br>👥 '+esc(rv.who):''}</details>` : '';
   const muteBtn = `<button class="mutebtn${n.muted?' on':''}" onclick="toggleMute('${n.id}')" title="${n.muted?'알림 켜기':'알림 끄기(관심 없음 → 1줄+흐리게)'}">${n.muted?'🔔':'🔕'}</button>`;
   const foldBtn = `<button class="foldbtn" onclick="toggleCollapse('${n.id}')" title="${n.collapsed?'펼치기':'접기(알림은 계속 옴)'}">${n.collapsed?'▾':'▸'}</button>`;
   const btns = `<div class="cardbtns">${n.muted?'':foldBtn}${muteBtn}</div>`;

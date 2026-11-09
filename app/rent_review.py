@@ -2,8 +2,13 @@
 
 2026-10-27 사용자: "임대알림도 하긴 해야지… 다만 공고를 클로드가 제대로 분석해서 지원할만한 곳인지는
 파악 필요. 59m2 이상만 취급하자고." → 임대 새 공고 알림은 수집 즉시 보내지 않고, 분석(cost.enrich) 뒤
-이 판단을 받아 '추천 · 검토'만 보낸다. 전용 59㎡ 이상 세대가 없으면(has_59=false) 알림 · 아침 리마인더에서 뺀다.
+이 판단을 받아 '추천 · 검토'만 보낸다. 기준 면적 이상 세대가 없으면(has_area=false) 알림 · 아침 리마인더에서 뺀다.
 결과는 meta `rent_review:<id>`에 저장(대시보드 · 아침 알림이 읽음).
+
+2026-11-09 사용자: "49이상으로 잡자 이제. 59가 아니라." → 기준 면적은 config `rent_review.min_area_m2`(49).
+청년안심주택 신혼부부형 투룸이 대개 전용 49㎡대라 59 기준으로는 전부 '제외'였다.
+판단마다 그때의 기준(min_area)을 저장하고, 기준이 바뀌면 '면적 미달 · 확인 불가'였던 판단만 다시 받는다.
+예전 판단의 키(has_59 · area_59_types)도 그대로 읽는다.
 """
 import html
 import json
@@ -31,8 +36,22 @@ def get(nid: str):
     return json.loads(v) if v else None   # 빈 값 = 다시 분석하면서 지운 것
 
 
+def min_area(cfg: dict) -> float:
+    return (cfg.get("rent_review") or {}).get("min_area_m2", 59)
+
+
+def _has_area(r):
+    """기준 면적 이상 타입이 있는가(True/False/None). 2026-11-09 전 판단은 has_59 키."""
+    return r.get("has_area", r.get("has_59"))
+
+
+def _stale(r, area) -> bool:
+    """기준 면적이 바뀌었고 그때 '면적 미달 · 확인 불가'였던 판단 → 다시 받는다(면적 충족이던 것은 그대로)."""
+    return _has_area(r) is not True and r.get("min_area", 59) != area
+
+
 def should_alert(r) -> bool:
-    return bool(r) and r.get("has_59") is not False and r.get("verdict") in ("추천", "검토")
+    return bool(r) and _has_area(r) is not False and r.get("verdict") in ("추천", "검토")
 
 
 def badge(r) -> str:
@@ -41,7 +60,7 @@ def badge(r) -> str:
 
 def _prompt(n: dict, analysis, pdf: str, cfg: dict) -> str:
     profile = cfg.get("profile") or {}
-    min_area = (cfg.get("rent_review") or {}).get("min_area_m2", 59)
+    area = min_area(cfg)
     keep = ("deposit_manwon", "monthly_manwon", "area_m2", "units", "apply_start", "apply_end", "move_in",
             "lease_term", "income_limit", "residency_req", "rank_advice", "note")
     a = {k: analysis.get(k) for k in keep if isinstance(analysis, dict) and analysis.get(k)}
@@ -54,14 +73,16 @@ def _prompt(n: dict, analysis, pdf: str, cfg: dict) -> str:
         "★ 우리는 임대주택도 갈 수 있다(2026-10-27) — '임대라서'라는 이유만으로 제외 · 비추천하지 말 것. "
         "분양전환 여부 · 재당첨 제한 · 청약통장 사용 처리 같은 임대 특유의 손익은 reason에 적되, verdict는 아래 기준으로 정한다.\n"
         "판단 순서:\n"
-        f"① 전용 {min_area}㎡ 이상인 공급 타입(주택형)이 있는가 — 공고문 공급표 · 임대조건표에서 확인. "
-        f"하나도 없으면 has_59=false, verdict='제외'. 공고문으로 확인이 안 되면 has_59=null\n"
-        "② 우리(부부 합산 또는 각자)가 자격 · 소득 · 자산 · 거주지 순위로 실제 신청 가능한가(가능한 사람과 순위)\n"
+        f"① 전용 {area}㎡ 이상인 공급 타입(주택형)이 있는가 — 공고문 공급표 · 임대조건표에서 확인(예: 49.76㎡는 {area}㎡ 이상인지로 판단). "
+        f"하나도 없으면 has_area=false, verdict='제외'. 공고문으로 확인이 안 되면 has_area=null\n"
+        "② 우리(부부 합산 또는 각자)가 자격 · 소득 · 자산 · 거주지 순위로 실제 신청 가능한가(가능한 사람과 순위). "
+        f"{area}㎡ 이상 타입이 특정 계층(예: 신혼부부형) 전용이면 그 계층으로 신청 가능한지를 본다. "
+        "특별공급은 안 돼도 소득 · 자산 요건 없는 일반공급(추첨)이 있으면 신청 가능으로 본다\n"
         "③ 보증금 · 월임대료 · 거주 가능 기간이 주변 시세 대비 메리트가 있는가, 목적지 통근 시간은 괜찮은가\n"
-        "verdict: '추천'(59㎡↑ 있고 신청 가능하고 조건 좋음) · '검토'(가능하지만 따져볼 점 있음, 또는 면적 확인 불가) · "
-        "'비추천'(가능하지만 메리트 적음) · '제외'(59㎡↑ 없음 또는 신청 불가)\n"
-        '출력 형식: {"max_area_m2": 숫자 또는 null, "area_59_types": "59㎡ 이상 타입 요약(세대수 · 보증금/월세), 없으면 빈 문자열", '
-        '"has_59": true/false/null, "verdict": "...", "reason": "한국어 1~2문장, 핵심 숫자 포함", '
+        f"verdict: '추천'({area}㎡↑ 있고 신청 가능하고 조건 좋음) · '검토'(가능하지만 따져볼 점 있음, 또는 면적 확인 불가) · "
+        f"'비추천'(가능하지만 메리트 적음) · '제외'({area}㎡↑ 없음 또는 신청 불가)\n"
+        f'출력 형식: {{"max_area_m2": 숫자 또는 null, "area_types": "{area}㎡ 이상 타입 요약(세대수 · 보증금/월세), 없으면 빈 문자열", '
+        '"has_area": true/false/null, "verdict": "...", "reason": "한국어 1~2문장, 핵심 숫자 포함", '
         '"who": "누가 몇 순위로 가능한지 한 줄"}\n\n'
         f"공고: {json.dumps(meta, ensure_ascii=False)}\n"
         f"기존 분석(표 파싱 · 다른 모델 추출): {json.dumps(a, ensure_ascii=False)}\n"
@@ -85,13 +106,15 @@ def review(n: dict, cfg: dict):
     if not isinstance(r, dict) or r.get("verdict") not in _BADGE:
         return None
     r["at"] = db.now_kst()
+    r["min_area"] = min_area(cfg)
     db.set_meta(_KEY + n["id"], json.dumps(r, ensure_ascii=False))
-    log.info("임대 판단: %s → %s (59㎡↑ %s)", n.get("name"), r["verdict"], r.get("has_59"))
+    log.info("임대 판단: %s → %s (%s㎡↑ %s)", n.get("name"), r["verdict"], r["min_area"], _has_area(r))
     return r
 
 
 def message(n: dict, r: dict) -> str:
-    area = r.get("area_59_types") or (f"최대 전용 {r['max_area_m2']}㎡" if r.get("max_area_m2") else "면적 공고문 확인 필요")
+    area = (r.get("area_types") or r.get("area_59_types")
+            or (f"최대 전용 {r['max_area_m2']}㎡" if r.get("max_area_m2") else "면적 공고문 확인 필요"))
     lines = [f"🏠 <b>임대 새 공고 · {badge(r)} {r['verdict']}</b>", f"<b>{html.escape(n['name'], quote=False)}</b>",
              html.escape(" · ".join(x for x in (n.get("region"), n.get("house_kind")) if x), quote=False),
              "📐 " + html.escape(area, quote=False), html.escape(r.get("reason") or "", quote=False)]
@@ -115,12 +138,17 @@ def backfill(ids=None):
         return
     try:
         cfg = rules.load_config()
+        area = min_area(cfg)
         now = datetime.now(KST)
         for n in db.list_notices(matched_only=True):
             if (ids and n["id"] not in ids) or n.get("muted") or not is_rent(n) or not _upcoming(n, now.date()):
                 continue
             r = get(n["id"])
-            if r is None:
+            if r is not None and _stale(r, area):
+                r = review(n, cfg) or r   # 실패하면 예전 판단 유지, 다음 수집 때 다시
+                if _stale(r, area):
+                    continue
+            elif r is None:
                 fresh = (n.get("first_seen") or "") > (now - timedelta(hours=6)).strftime("%Y-%m-%d %H:%M")
                 if cost._cache_get(n["id"]) == "miss" and fresh:
                     continue

@@ -46,7 +46,7 @@ def run_collection() -> dict:
         if is_new:
             new_matched += 1
             key = f"{n['id']}:new"
-            # 임대는 분석 뒤 Claude가 '지원할 만한가 · 59㎡↑'를 판단한 다음 보낸다(rent_review.backfill)
+            # 임대는 분석 뒤 Claude가 '지원할 만한가 · 기준 면적(49㎡)↑'를 판단한 다음 보낸다(rent_review.backfill)
             if not db.is_muted(n["id"]) and not db.already_sent(key) and not rent_review.is_rent(n):
                 notify.send_telegram(rules.new_notice_message(n))
                 db.mark_sent(key)
