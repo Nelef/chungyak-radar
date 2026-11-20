@@ -1,4 +1,4 @@
-"""목적지 대중교통 소요시간 계산.
+"""통근 목적지까지 대중교통 소요시간 계산.
 
 주소 → 좌표: 카카오 로컬 API (developers.kakao.com, REST API 키)
 좌표 → 대중교통 경로: 네이버 지도 대중교통(지하철+도보 경로만, 평일 08시 출발) 우선, 실패 시 ODsay 지하철 전용
@@ -23,9 +23,10 @@ from app import db
 
 log = logging.getLogger("commute")
 
-# 실제 출근지 통근 목적지 — 2026-10-27 목적지 좌표에서 변경
-DEST_NAME = "통근 목적지"
-DEST_X, DEST_Y = 127.0329295, 37.5000693  # 경도, 위도
+# 통근 목적지 - 환경변수로 바꾼다(기본값: 서울시청)
+DEST_NAME = os.environ.get("COMMUTE_DEST_NAME", "서울시청")
+DEST_X = float(os.environ.get("COMMUTE_DEST_X", "126.9779692"))  # 경도
+DEST_Y = float(os.environ.get("COMMUTE_DEST_Y", "37.5662952"))   # 위도
 
 CACHE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS commute_cache (

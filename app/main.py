@@ -140,7 +140,7 @@ def index():
 
 # ── 로그인 게이트 ────────────────────────────────────────────────
 # 비밀번호(전체 권한) 또는 게스트(읽기 전용) 선택. 게스트 쓰기 차단은 반드시
-# 서버에서 강제한다(버튼만 숨기면 API 직접 호출로 우회 가능). 비번은 deploy.env의
+# 서버에서 강제한다(버튼만 숨기면 API 직접 호출로 우회 가능). 비번은 .env 의
 # DASHBOARD_PASSWORD. 미설정이면 게이트 비활성(전원 전체 권한 — 하위호환).
 _DASH_PW = os.environ.get("DASHBOARD_PASSWORD", "").strip()
 # 세션은 DB(sessions 테이블, /data 볼륨)에 저장 → 재배포·재시작에도 로그인 유지.
@@ -156,7 +156,7 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "?"
 
 
-# 공개 데모(uyai 포트폴리오 /radar/). 개인 데이터를 지운 DB 사본으로 띄우는 별도 컨테이너에서만 켠다.
+# 공개 데모 모드(DEMO_MODE=1). 개인 데이터를 지운 DB 사본으로 띄우는 별도 컨테이너에서만 켠다.
 # 데모에선 누구도 로그인할 수 없고(전원 게스트=읽기 전용), 텔레그램·LLM 자동분석·리마인더가 꺼진다.
 DEMO = os.environ.get("DEMO_MODE", "") == "1"
 
@@ -222,8 +222,9 @@ def api_logout(request: Request):
 
 
 def _strip_personal(r: dict):
-    """게스트 응답에서 가구의 개인 소득/자격 판정을 제거한다.
+    """게스트 응답에서 우리 부부의 개인 소득/자격 판정을 제거한다.
     - AI 자격조언(rank_advice)·Q&A: 프로필 소득을 참조 → 제거
+    - 소득 판정 태그(income_verdict 등, 우리 소득 금액·맞벌이 판정이 박힘) → 제거
     공고 자체 공개정보(필요현금·분양가·납부일정·공고 소득기준 income_limit·지역순위)는 유지."""
     def clean(res):
         if isinstance(res, dict):
@@ -232,10 +233,10 @@ def _strip_personal(r: dict):
     for h in (r.get("llm_history") or []):
         clean(h.get("r"))
     r["qa"] = []
-    # 가구 상황이 박힌 태그 제거: 소득 판정(소득/맞벌이) + 혼인상태(혼인/예비신혼/기혼)
-    # + 생활권·관심(🚇 목적지 통근 = 출퇴근지, '서울 당해'·'서울 거주자' = 거주지, ⭐ 관심단지).
+    # 우리 부부 상황이 박힌 태그 제거: 소득 판정(소득/맞벌이) + 혼인상태(혼인/예비신혼/기혼)
+    # + 생활권·관심(🚇 통근 = 출퇴근지, '서울 당해'·'서울 거주자' = 거주지, ⭐ 관심단지).
     _hide = ("소득", "맞벌이", "혼인", "예비신혼", "기혼",
-             "목적지", "🚇", "통근", "당해", "거주자", "관심단지")
+             "🚇", "통근", "당해", "거주자", "관심단지")
     r["tags"] = [t for t in (r.get("tags") or []) if not any(w in t for w in _hide)]
     # 메모(우리 판단 메모)·통근 분·LLM 메모(note)·알림끔/접기 표시도 개인 정보라 비운다.
     r["memo"] = ""
@@ -252,13 +253,14 @@ def api_notices(request: Request, all: bool = False):
     rows = db.list_notices(matched_only=not all)
     authed = _authed(request)
     for r in rows:
+        if not authed:                # 게스트: 개인 소득 노출 방지(임대 판단도 우리 소득 기준이라 숨김)
             _strip_personal(r)
         elif rent_review.is_rent(r):
             r["rent_review"] = rent_review.get(r["id"])
     return rows
 
 
-# 구글 캘린더 구독용 .ics — 로그인 대신 deploy.env의 CAL_TOKEN이 주소에 들어가야 열린다(구글이 직접 가져가므로).
+# 구글 캘린더 구독용 .ics — 로그인 대신 .env 의 CAL_TOKEN이 주소에 들어가야 열린다(구글이 직접 가져가므로).
 _CAL_TOKEN = os.environ.get("CAL_TOKEN", "").strip()
 
 

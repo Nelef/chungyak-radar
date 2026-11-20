@@ -1,89 +1,103 @@
-# 청약 레이더
+<h1 align="center">청약 레이더</h1>
 
-서울·경기 관심 지역 청약 공고(청약홈 + LH + SH·청년안심주택 게시판)를 주기적으로 수집해서
-새 공고가 뜨면 텔레그램으로 즉시 알리고, 접수 시작·마감 D-7/D-1에
-리마인더를 보내는 개인 NAS용 시스템.
+<p align="center"><b>서울 · 경기 청약 공고를 모아 새 공고와 접수 일정을 텔레그램으로 알려 주는 셀프호스팅 대시보드</b><br>
+청약홈 · LH · SH · 청년안심주택 공고를 한곳에서 보고, 필요현금 · 통근시간 · 소득기준까지 계산합니다.</p>
 
-- 새 공고 알림에 두 사람 상황(서울 당해 / 수도권 풀 / 규제지역 재당첨 제한 /
-  신혼희망타운 수익공유 확인 / 혼인신고 전·후)에 맞는 행동 태그가 자동으로 붙음
-- 웹 대시보드: `http://NAS_IP:8899` — 접수중/예정/마감 상태판
+<p align="center">
+<img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT">
+<img src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white" alt="Python">
+<img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI">
+<img src="https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white" alt="Docker">
+<img src="https://img.shields.io/badge/Telegram-bot-26A5E4?logo=telegram&logoColor=white" alt="Telegram">
+</p>
 
-## 1. API 키 발급 (무료, 자동승인)
+<p align="center"><img src="docs/screenshots/radar-2.png" width="900" alt="분양 공고 - 필요현금 · 납부 일정 계산"></p>
 
-[공공데이터포털](https://www.data.go.kr) 회원가입 후 아래 두 개를 "활용신청":
+## 주요 기능
 
-1. **한국부동산원_주택청약 분양정보 조회 서비스** → 청약홈 APT·무순위 공고
-2. **한국토지주택공사_분양임대공고문 정보** → LH 공공분양(뉴:홈, 3기 신도시, 신혼희망타운)
+- **공고 수집** - 공공데이터포털 API(한국부동산원 청약홈 · LH) + SH · 청년안심주택 · 중소벤처기업부 게시판을 주기적으로 수집하고, 같은 공고를 묶어 중복 없이 보여 줍니다.
+- **텔레그램 알림** - 새 공고 즉시 알림, 접수 시작 · 마감 D-7 / D-1 리마인더, 관심단지 알림.
+- **필요현금 계산** - 주택형별 분양가와 계약금 · 중도금 비율로 계약 시 필요현금, 납부 일정, 대출(LTV) 반영 자기자본을 계산합니다.
+- **통근시간 태그** - 공고 주소에서 목적지까지 대중교통 소요시간 · 환승 횟수(카카오 + ODsay).
+- **자격 · 상황 태그** - 분양 / 임대, 규제지역 재당첨 제한, 예비신혼 · 신혼 모드에 맞춘 행동 안내, 유형별 소득요건.
+- **AI 공고 분석(선택)** - 공고문 PDF 에서 임대조건 · 계약금 비율 · 소득기준을 뽑아 요약합니다.
+- **웹 대시보드** - 접수중 / 예정 / 마감, 분양 · 무순위 · 임대 필터, 면적 · 필요현금 필터, 구글 캘린더 구독(.ics).
+- **REST API** - FastAPI 로 공고 · 상태 · 설정 · 수집 실행 API 제공.
 
-마이페이지에서 각각의 **일반 인증키(Decoding)** 를 복사.
-
-### 통근시간 태그용 키 (선택, 역시 무료)
-
-공고마다 "🚇 목적지 약 N분 · 환승 N회" 태그를 붙이려면 두 개 더:
-
-1. **카카오 REST API 키** — [developers.kakao.com](https://developers.kakao.com) →
-   애플리케이션 추가 → 앱 키의 REST API 키 (주소 → 좌표 변환)
-2. **ODsay API 키** — [lab.odsay.com](https://lab.odsay.com) → 회원가입 →
-   API 키 발급 (대중교통 길찾기, 무료 1,000회/일)
-
-같은 주소는 캐시하므로 호출량은 공고당 1~2회 수준. 키가 없으면 통근 태그만
-빠지고 나머지는 정상 동작. 목적지·기준시간은 `config.yaml`의 `commute`에서 조정
-(기본 목적지·60분, 초과 시 ⚠ 표시. `exclude_over: true`면 초과 공고 자체를 제외).
-
-**한계**: 신규 택지지구(3기 신도시 등)는 지번이 아직 없어 좌표 변환이 실패하거나,
-현재 교통망 기준이라 개통 예정 노선(교산 3호선 연장 등)이 반영되지 않음.
-초과 공고도 기본은 제외하지 않고 ⚠ 태그만 붙이는 이유.
-
-## 2. 텔레그램 봇 만들기
-
-1. 텔레그램에서 `@BotFather` 검색 → `/newbot` → 봇 이름 지정 → **토큰** 복사
-2. 만든 봇에게 아무 메시지나 한 번 보내기
-3. 브라우저에서 `https://api.telegram.org/bot<토큰>/getUpdates` 열어 `chat.id` 확인
-4. **둘이 같이 받으려면**: 두 사람 + 봇이 있는 그룹방을 만들고, 그룹에 메시지를
-   보낸 뒤 같은 방법으로 그룹의 chat id(음수)를 사용
-
-## 3. NAS 배포 (Synology Container Manager 기준)
+## 빠른 시작
 
 ```bash
-# 프로젝트 폴더를 NAS에 업로드 후
-cp .env.example .env      # 키·토큰 입력, 동작 확인 후 MOCK=0 또는 삭제
+git clone https://github.com/Nelef/chungyak-radar.git && cd chungyak-radar
+cp .env.example .env               # 키 · 토큰 입력(키 없이 MOCK=1 로 먼저 확인 가능)
+cp config.example.yaml config.yaml # 내 조건(지역 · 관심단지 · 가구 상황)
 docker compose up -d --build
+# -> http://localhost:8899
 ```
 
-- 대시보드: `http://NAS_IP:8899`
-- 데이터: `./data/radar.db` (컨테이너 재생성해도 유지)
+1. `.env` 를 `MOCK=1` 로 두고 띄우면 샘플 공고 3건이 대시보드에 보입니다.
+2. 텔레그램 토큰을 넣고 `curl -X POST http://localhost:8899/api/test-telegram` 으로 알림을 확인합니다.
+3. API 키를 넣고 `MOCK` 을 지운 뒤 `docker compose restart`. 대시보드의 **지금 수집** 으로 바로 수집할 수 있습니다.
 
-Container Manager UI를 쓴다면: 프로젝트 → 생성 → 이 폴더 선택 →
-`docker-compose.yml` 자동 인식.
+## API 키 발급(무료)
 
-## 4. 동작 확인 순서
+| 키 | 어디서 | 용도 |
+|---|---|---|
+| `APPLYHOME_API_KEY` | [공공데이터포털](https://www.data.go.kr) "한국부동산원_주택청약 분양정보 조회 서비스" 활용신청 -> 일반 인증키(Decoding) | 청약홈 APT · 무순위 공고 |
+| `LH_API_KEY` | 공공데이터포털 "한국토지주택공사_분양임대공고문 정보" | LH 공공분양 · 임대 |
+| `TELEGRAM_BOT_TOKEN` · `TELEGRAM_CHAT_ID` | 텔레그램 `@BotFather` -> `/newbot`, 봇에게 메시지를 보낸 뒤 `getUpdates` 로 chat id 확인(여럿이 받으려면 그룹방 id) | 알림 |
+| `KAKAO_REST_KEY` · `ODSAY_API_KEY` (선택) | [developers.kakao.com](https://developers.kakao.com) · [lab.odsay.com](https://lab.odsay.com) | 통근시간 태그 |
 
-1. `.env`에서 `MOCK=1` 상태로 기동 → 대시보드에 샘플 공고 3건이 보이면 파이프라인 정상
-2. 텔레그램 토큰 넣고 `curl -X POST http://NAS_IP:8899/api/test-telegram` → 메시지 수신 확인
-3. API 키 넣고 `MOCK` 지우고 재시작 → `docker compose restart`
-4. 대시보드 우상단 **지금 수집** 으로 즉시 수집 가능
+## 설정
 
-## 5. 필터 조정 (`config.yaml`)
+**환경 변수(`.env`)**
 
-- `mode: premarital` → **혼인신고 하는 날 `married`로 변경** (알림 태그 전환)
-- `regions.gyeonggi_cities` → 관심 도시 추가/삭제 (현재: 부천·하남·과천·성남·광명·안양·의왕)
-- `reminders: [7, 1]` → 리마인더 시점(일). 매일 08:30에 검사
-- 수정 후 `docker compose restart`
+| 변수 | 설명 |
+|---|---|
+| `MOCK` | `1` 이면 API 키 없이 샘플 데이터로 동작 |
+| `DASHBOARD_PASSWORD` | 대시보드 로그인 비밀번호(비우면 게이트 없음) |
+| `DASHBOARD_URL` | 텔레그램 알림에 넣을 대시보드 주소 |
+| `COMMUTE_DEST_NAME` · `COMMUTE_DEST_X` · `COMMUTE_DEST_Y` | 통근 목적지 이름 · 경도 · 위도(기본 서울시청) |
+| `CAL_TOKEN` | 구글 캘린더 구독 주소(`/cal/<CAL_TOKEN>.ics`)의 비밀값 |
+| `DEMO_MODE` | `1` 이면 로그인 없는 읽기 전용 데모(수집 · 알림 · AI 꺼짐) |
 
-## 구조
+**AI 공고 분석(선택)** - 아무 키도 없으면 이 기능만 꺼지고 수집 · 알림 · 대시보드는 그대로 돕니다.
+
+| 변수 | 설명 |
+|---|---|
+| `GEMINI_API_KEY` · `GEMINI_FREE_API_KEY` | Google AI Studio Gemini API 키(공고 분석 1순위) |
+| `CHUNGYAK_CLAUDE_TOKEN` | Claude Code CLI(`claude -p`)로 부를 때 `claude setup-token` 으로 받은 토큰 |
+| `ALT_LLM_URL` · `ALT_LLM_KEY` | LiteLLM 같은 Anthropic 호환 프록시 |
+
+**필터(`config.yaml`)** - 관심 지역(`regions`), 관심단지(`watchlist`), 제외 키워드, 리마인더 시점(`reminders: [7, 1]`), 통근 기준(`commute.max_minutes` · `exclude_over`), 필요현금 계산(LTV · 대출 한도), 가구 상황(`mode: premarital | married`, `profile`). 예시는 [`config.example.yaml`](config.example.yaml).
+
+## 스크린샷
+
+| 공고 목록 - AI 분석(임대조건 · 필요현금 · 소득기준) | 분양 공고 - 필요현금 · 납부 일정 |
+|---|---|
+| ![목록](docs/screenshots/radar-1.png) | ![분양](docs/screenshots/radar-2.png) |
+
+## 프로젝트 구조
 
 ```
-app/main.py     FastAPI + 스케줄러 (수집 주기 60분, 리마인더 08:30)
-app/sources.py  청약홈·LH API 클라이언트 (+ MOCK 샘플)
-app/boards.py   SH·청년안심주택 게시판 크롤러 (미리내집 등 임대 공고)
-app/rules.py    지역 필터 + 상황별 태그 + 알림 메시지
-app/notify.py   텔레그램 발송
-app/db.py       SQLite (공고 저장, 알림 중복 방지)
-web/index.html  대시보드
+app/main.py        FastAPI + APScheduler(수집 60분 주기, 리마인더 08:30)
+app/sources.py     청약홈 · LH API 클라이언트(+ MOCK 샘플)
+app/boards.py      SH · 청년안심주택 · 중기부 게시판 수집
+app/cost.py        분양가 · 필요현금 · 공고문 PDF 분석
+app/rules.py       지역 필터 · 상황 태그 · 알림 메시지
+app/commute.py     통근시간(카카오 + ODsay, 캐시)
+app/ical.py        캘린더 구독(.ics)
+app/notify.py      텔레그램 발송
+app/db.py          SQLite(공고 · 알림 중복 방지)
+web/index.html     대시보드
 ```
 
-## 주의
+## 알아 둘 것
 
-- API 필드명은 기관 사정으로 바뀔 수 있음. 수집이 0건이면 `docker compose logs`로
-  에러 확인 — 코드는 필드 누락 시 건너뛰도록 방어적으로 작성됨.
-- 알림은 참고용. **신청 전 반드시 입주자모집공고 원문으로 자격·일정 확인.**
+- 기관 API 필드명이 바뀔 수 있습니다. 수집이 0건이면 `docker compose logs` 로 확인하세요(필드가 빠지면 건너뛰도록 작성돼 있습니다).
+- 신규 택지지구는 지번이 없어 좌표 변환이 실패할 수 있고, 통근시간은 현재 교통망 기준입니다.
+- 게시판 수집은 각 사이트 이용 조건을 지키고 요청 간격을 두고 쓰세요.
+- 알림과 계산은 참고용입니다. 신청 전에는 반드시 입주자모집공고 원문으로 자격 · 일정을 확인하세요.
+
+## 라이선스
+
+[MIT](LICENSE)

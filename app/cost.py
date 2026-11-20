@@ -334,10 +334,10 @@ def _openai_terms(pdf_bytes, s, prompt=None, keywords=None, on_event=None):
 # --------------------------------------------------- LLM 대체 순서(2026-11-02)
 # 사용자 지정 "청약레이더도 우리 키들을 모두 쓸 수 있도록": 한 곳이 한도 · 장애면 다음 후보로 넘긴다.
 #   공고 분석(_gemini_generate): Gemini 무료 키 → Claude 주 → Claude 예비 → Codex → Gemini 유료 키(월 한도 ₩1,000, 맨 마지막)
-#   Claude 쓰는 일(_claude_generate — 공고 묶기 · 임대 판단): Claude 주 → Claude 예비 → Codex → Gemini(uyai 의 무료 키)
+#   Claude 쓰는 일(_claude_generate — 공고 묶기 · 임대 판단): Claude 주 → Claude 예비 → Codex → Gemini(프록시)
 # 유료 키(GEMINI_API_KEY · 설정의 api_key)는 AI Studio 프로젝트 'Gemini PAID - chungyak radar'(Tier 1 후불)라 쓴 만큼 청구된다
-# (예전 이름 'Gemini free Project' 는 이름만 무료였다 — 28일 ₩1,060). 무료 키(GEMINI_FREE_API_KEY)는 결제 없는 'uyai fallback FREE' 프로젝트.
-# Codex · uyai Gemini 는 uyai 컨테이너의 LiteLLM(ALT_LLM_URL · ALT_LLM_KEY, dart-deck server/alt_llm.py)에 같은 claude -p 를 붙여 모델만 바꾼다.
+# (예전 이름 'Gemini free Project' 는 이름만 무료였다 — 28일 ₩1,060). 무료 키(GEMINI_FREE_API_KEY)는 결제 없는 무료 프로젝트.
+# Codex · 프록시 Gemini 는 LiteLLM 같은 Anthropic 호환 프록시(ALT_LLM_URL · ALT_LLM_KEY)에 같은 claude -p 를 붙여 모델만 바꾼다.
 # 한도(429 · usage limit) · 인증 실패가 난 후보는 풀릴 때까지(Claude 한도 이벤트의 resetsAt, 없으면 1시간 · 인증 6시간) 건너뛴다.
 _BLOCK = {}
 _LIMIT_RE = re.compile(r"usage limit|limit reached|hit your (?:usage )?limit|rate[ _-]?limit|\b429\b|\b529\b|quota|overloaded|out of (?:extra )?usage|credit balance|resource.?exhausted|too many requests", re.I)
@@ -413,12 +413,11 @@ def _gemini_generate(prompt, s, on_event=None, max_tokens=4000):
     return _chain(steps, on_event)
 
 
-# --------------------------------------------------- Claude Code(claude -p 헤드리스) — Claude 구독 · Codex · uyai Gemini
-# 법숲(finlaw-rag) src/llm.mjs claudeJSON()과 같은 방식. ★ 토큰은 개인 구독 토큰만 쓴다.
-# 개발 맥의 기본 claude 로그인은 기본 계정이라, 토큰이 없을 때 기본 로그인으로 넘어가면
-# 기본 계정으로 과금된다(2026-10-13 법숲 사고). 그래서 토큰이 없으면 아예 호출하지 않는다(대체 엔진은 --bare 라 로그인을 읽지 않는다).
-# 토큰은 이미지에 굽지 않고 finalize.sh가 NAS의 claude.env(법숲 것 공유) · alt_client.env를 --env-file로 물린다.
-_CLAUDE_TOKEN_ENVS = ("CHUNGYAK_CLAUDE_TOKEN", "FINLAW_CLAUDE_TOKEN", "FINLAW_CLAUDE_TOKEN_2")
+# --------------------------------------------------- Claude Code(claude -p 헤드리스) — Claude 구독 · Codex · 프록시 Gemini
+# claude -p 를 헤드리스로 부른다. 토큰(CHUNGYAK_CLAUDE_TOKEN)은 실행하는 사람이 직접 받은 것을 쓴다.
+# 토큰이 없으면 아예 호출하지 않는다(의도하지 않은 기본 로그인으로 과금되지 않게, 대체 엔진은 --bare 라 로그인을 읽지 않는다).
+# 토큰은 이미지에 굽지 않고 실행할 때 환경변수로 넘긴다.
+_CLAUDE_TOKEN_ENVS = ("CHUNGYAK_CLAUDE_TOKEN", "CHUNGYAK_CLAUDE_TOKEN_2")
 
 
 def _claude_tokens():
@@ -439,7 +438,7 @@ def claude_available():
 
 
 def _cc_run(prompt, timeout, token=None, alt=None, label="Claude", key=""):
-    """claude -p 한 번 — token(Claude 구독) 또는 alt('codex' · 'gemini', uyai LiteLLM)"""
+    """claude -p 한 번 — token(Claude 구독) 또는 alt('codex' · 'gemini', Anthropic 호환 프록시)"""
     exe = shutil.which("claude")
     if not exe:
         raise LLMDownError("claude CLI 없음")
@@ -498,12 +497,12 @@ def _cc_steps(prompt, on_event, timeout, with_gemini=True):
     if _alt_ready():
         steps.append(("Codex", "codex", lambda: _cc_run(prompt, timeout, alt="codex", label="Codex", key="codex")))
         if with_gemini:
-            steps.append(("Gemini(uyai)", "gemini", lambda: _cc_run(prompt, timeout, alt="gemini", label="Gemini(uyai)", key="gemini")))
+            steps.append(("Gemini(프록시)", "gemini", lambda: _cc_run(prompt, timeout, alt="gemini", label="Gemini(프록시)", key="gemini")))
     return steps
 
 
 def _claude_generate(prompt, on_event=None, timeout=180):
-    """Claude 쓰는 일(공고 묶기 · 임대 판단) — Claude 주 → 예비 → Codex → Gemini(uyai)"""
+    """Claude 쓰는 일(공고 묶기 · 임대 판단) — Claude 주 → 예비 → Codex → Gemini(프록시)"""
     steps = _cc_steps(prompt, on_event, timeout)
     if not steps:
         raise LLMDownError("Claude 폴백 불가(개인 토큰 · 대체 엔진 없음)")

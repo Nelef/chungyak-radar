@@ -304,7 +304,7 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
   </div>
 
   <div class="filterbar">
-    <label class="fchk personal"><input type="checkbox" id="cmOn" checked> 🚇 통근 목적지
+    <label class="fchk personal"><input type="checkbox" id="cmOn" checked> 🚇 통근
       <input type="number" id="cmVal" min="10" step="5" value="60"> 분 이내</label>
     <label class="fchk"><input type="checkbox" id="areaOn" checked> 전용
       <input type="number" id="areaVal" min="0" step="1" value="30"> ㎡ 이상</label>
@@ -318,12 +318,12 @@ header{padding:26px 0 14px; display:flex; align-items:baseline; justify-content:
 
 <script>
 let NOTICES = [], FILTER = 'active', CAT = 'all', SORT = 'deadline', TODAY = new Date();
-let DEMO = false;   // 공개 데모(uyai /radar/) — 게이트 없이 바로 게스트, 로그인 불가
+let DEMO = false;   // 공개 데모 — 게이트 없이 바로 게스트, 로그인 불가
 let GUEST = false;   // 게스트(읽기 전용) 모드 — 서버에서도 쓰기 차단됨
 // 값 필터(면적·필요현금) — 각각 켜기/끄기 + 값 조정, 동시 적용. localStorage에 저장.
 // 전용 30㎡ 이하(원룸급)는 분석되면 제외 — 기본 켜짐. 미분석은 값을 몰라 통과.
 let AREA_ON = true, AREA_VAL = 30, CASH_ON = false, CASH_VAL = 20000; // CASH_VAL은 만원
-let CM_ON = true, CM_VAL = 60;  // 통근 목적지 지하철 통근 N분 이내(기본 켜짐)
+let CM_ON = true, CM_VAL = 60;  // 지하철 통근 N분 이내(기본 켜짐)
 const $ = s => document.querySelector(s);
 /* 공고 종류: 분양(applyhome·lh) / 무순위·임의공급(applyhome_remndr·applyhome_opt) / 임대(applyhome_rent·board) */
 function catOf(n){

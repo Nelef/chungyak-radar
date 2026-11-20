@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS notices (
     flags         TEXT,                  -- JSON: 투기과열/분상제/공공택지 등 원본 플래그
     tags          TEXT,                  -- JSON: 우리 규칙으로 붙인 태그 목록
     matched       INTEGER DEFAULT 0,     -- 필터 통과 여부
-    commute_min   INTEGER,               -- 목적지 대중교통 소요분(지오코딩 실패 시 NULL)
+    commute_min   INTEGER,               -- 통근 목적지까지 대중교통 소요분(지오코딩 실패 시 NULL)
     first_seen    TEXT NOT NULL,
     raw           TEXT
 );

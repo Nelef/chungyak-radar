@@ -1,7 +1,7 @@
 """필터 + 태깅 규칙.
 
 config.yaml 기준으로 관심 지역을 거르고,
-두 사람 상황(서울 2년 거주·각자 세대주·혼인신고 전·생애최초)에 맞는
+가구 상황(mode: premarital / married - 각자 세대주 · 혼인신고 전후 · 생애최초)에 맞는
 행동 태그를 공고에 붙인다.
 """
 import html
@@ -64,6 +64,7 @@ def _man(won) -> str:
 
 
 def income_verdict(kind: str, cfg: dict):
+    """우리 소득으로 이 유형이 되는지 한 줄로 판정. 대시보드 카드 맨 앞에 붙는다.
 
     기준은 건강보험 보수월액 합산(profile.health_pay_monthly_won) — 심사 조회 1순위 자료다.
     원천징수 총급여는 조회 ⑤순위라 판정에 쓰지 않는다.
@@ -150,6 +151,7 @@ def build_tags(n: dict, cfg: dict) -> list[str]:
     is_hopetown = "신혼희망" in name
     if is_hopetown:
         # 신희타 분양은 '3인 이하'를 한 구간으로 묶고 맞벌이 200% 구간이 따로 있어
+        # 임대(2인 기준 130%)보다 소득 문턱이 훨씬 높다 → 우리 소득으론 여유.
         tags.insert(0, "✅ 소득 — 신희타 분양은 '3인 이하' 구간 + 맞벌이 200%까지 열려 여유")
         tags.append("⚠ 신혼희망타운 — 수익공유형 모기지 의무 여부 공고문 확인")
 
@@ -204,9 +206,9 @@ def process(notices: list[dict]) -> list[dict]:
                     minutes, transfers = result
                     n["commute_min"] = minutes
                     if minutes > ccfg["max_minutes"]:
-                        n["matched"] = False  # 목적지 1시간 초과 제외(사용자 요청)
+                        n["matched"] = False  # 통근 기준 초과 제외
                     else:
-                        n["tags"].insert(0, f"🚇 통근 목적지 약 {minutes}분 · 환승 {transfers}회")
+                        n["tags"].insert(0, f"🚇 {commute.DEST_NAME} 약 {minutes}분 · 환승 {transfers}회")
                 else:  # 지오코딩 실패 — 거르지 않고 남기되 통근 미확인임을 표시
                     n["tags"].insert(0, "🚇 통근시간 확인 필요(주소 미확인)")
             continue
@@ -230,7 +232,7 @@ def process(notices: list[dict]) -> list[dict]:
                 if minutes >= commute.NO_SUBWAY:   # 버스를 타야만 갈 수 있음(희망 조건: 지하철만)
                     n["tags"].insert(0, "⚠ 🚌 지하철만으로는 경로 없음(버스 필요)")
                 else:
-                    n["tags"].insert(0, f"{mark}🚇 통근 목적지 약 {minutes}분 · 환승 {transfers}회{suffix}")
+                    n["tags"].insert(0, f"{mark}🚇 {commute.DEST_NAME} 약 {minutes}분 · 환승 {transfers}회{suffix}")
                 if over and ccfg.get("exclude_over") and not watch:
                     n["matched"] = False
         if watch:  # 관심단지는 통근 초과여도 남기고 맨 앞에 표시
@@ -249,22 +251,25 @@ def build_rental_tags(n: dict, cfg: dict) -> list[str]:
     if "청년안심" in name or "청년안심주택 포털" in (n.get("house_kind") or ""):
         # 소득기준은 공고문마다 다르고(1인 120%·2인 110% 등) 아예 없는 공고도 있어
         # 고정 태그로 판정하지 않는다. 정확한 순위는 🔄 LLM 분석(공고문 기준 추출)으로.
-        tags.append("청년안심 — 소득기준이 공고마다 다름(없는 공고도 있음). 🔄 분석으로 우리 순위 판정")
+        tags.append("청년안심 — 소득기준이 공고마다 다름(없는 공고도 있음). 🔄 분석으로 내 순위 판정")
     if "신혼희망" in name:
         tags.append("⚠ 신혼희망타운 — 수익공유형 확인")
+    # 유형별 소득요건 안내. profile 소득으로 판정한 결과는 income_verdict 가 맨 앞에 붙인다.
     # (도시근로자 월평균소득 %는 대략치 — 실제는 가구원수·연도별 공고문 확인)
     kind = (n.get("house_kind") or "") + name
     if "행복주택" in kind:
-        # 2인 가구 가산을 빼먹은 값이었다. 실제 과천 신혼희망타운 행복주택 공고문은
-        # 이 태그를 믿었으면 자격 있는 공고를 걸러냈다. 출산자녀 가산(+10%p)까지 겹쳐
-        # 고정 수치는 계속 틀리므로 중립 문구만 두고 판정은 🔄 LLM 분석에 맡긴다.
+        # 소득기준이 가구원수 · 맞벌이 · 출산자녀 가산(+10%p)에 따라 갈려(예: 2인 맞벌이 130%)
+        # 고정 수치로 단정하면 자격 있는 공고를 걸러낸다. 중립 문구만 두고 판정은 🔄 LLM 분석에 맡긴다.
         tags.append("행복주택 — 소득기준이 가구원수·맞벌이·출산자녀 가산에 따라 갈림"
-                    "(2인 맞벌이는 130%까지 열림). 🔄 분석으로 우리 기준 판정")
+                    "(2인 맞벌이는 130%까지 열림). 🔄 분석으로 내 기준 판정")
     elif "국민임대" in kind:
+        tags.append("국민임대 — 소득 70%(가구원수별) 기준. 공고문 소득표 확인")
     elif "통합공공임대" in kind:
+        tags.append("통합공공임대 — 중위소득 100%(맞벌이 120%) 기준. 공고문 확인")
     elif "공공임대" in kind:  # 5·10년 공공임대(분양전환)
         tags.append("공공임대(분양전환) — 소득·자산 요건 확인. 향후 분양전환 가능, 대출규제 무관")
     elif "장기전세" in kind:
+        tags.append("장기전세 — 맞벌이 완화 기준이 있는 공고 있음(미리내집류). 공고문 소득표 확인")
     if cfg.get("mode") == "premarital":
         tags.append("예비신혼부부 가능 여부·혼인신고 기한 공고문 확인")
     # 소득 판정을 맨 앞에 — 카드를 열지 않고도 되는지/안 되는지 바로 보이게.
@@ -281,7 +286,7 @@ def _fmt_range(a, b):
     return a or b or "-"
 
 
-DASHBOARD_URL = "https://example.com/"
+DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "")
 
 
 def _dash_url() -> str:
